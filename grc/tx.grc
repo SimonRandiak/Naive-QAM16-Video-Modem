@@ -1,25 +1,29 @@
 options:
   parameters:
-    alias: ''
     author: Simon Randiak
     catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
     comment: ''
     copyright: ''
     description: ''
+    gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
-    generator_class_name: PythonQtGuiGenerator
-    generator_module: gnuradio.grc.workflows.python_qt_gui
     hier_block_src_path: '.:'
     id: tx
     max_nouts: '0'
     output_language: python
+    placement: (0,0)
     qt_qss_theme: ''
     realtime_scheduling: ''
     run: 'True'
     run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
     thread_safe_setters: ''
     title: QAM16 video link Transmitter
+    window_size: (1000,1000)
   states:
     bus_sink: false
     bus_source: false
@@ -115,6 +119,42 @@ blocks:
     coordinate: [296, 12.0]
     rotation: 0
     state: enabled
+- name: blocks_file_sink_0
+  id: blocks_file_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    append: 'False'
+    comment: ''
+    file: /home/simon/SDR/videolink/dump.iq
+    type: complex
+    unbuffered: 'False'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1264, 252.0]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_const_vxx_0
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    const: '0.31622776601'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1016, 252.0]
+    rotation: 0
+    state: enabled
 - name: digital_constellation_modulator_0
   id: digital_constellation_modulator
   parameters:
@@ -135,33 +175,6 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [760, 220.0]
-    rotation: 0
-    state: enabled
-- name: digital_symbol_sync_xx_0
-  id: digital_symbol_sync_xx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    constellation: digital.constellation_bpsk().base()
-    damping: '1.0'
-    loop_bw: '0.045'
-    max_dev: '1.5'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    nfilters: '128'
-    osps: '1'
-    pfb_mf_taps: '[]'
-    resamp_type: digital.IR_MMSE_8TAP
-    sps: sps
-    ted_gain: '1.0'
-    ted_type: digital.TED_GARDNER
-    type: cc
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1056, 252.0]
     rotation: 0
     state: enabled
 - name: epy_block_0
@@ -210,25 +223,6 @@ blocks:
     coordinate: [304, 292.0]
     rotation: 0
     state: enabled
-- name: fir_filter_xxx_0
-  id: fir_filter_xxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    decim: '1'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    samp_delay: '0'
-    taps: rrc_taps
-    type: ccc
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [912, 124.0]
-    rotation: 0
-    state: enabled
 - name: network_socket_pdu_0
   id: network_socket_pdu
   parameters:
@@ -266,189 +260,14 @@ blocks:
     coordinate: [472, 372.0]
     rotation: 0
     state: enabled
-- name: qtgui_const_sink_x_0
-  id: qtgui_const_sink_x
-  parameters:
-    affinity: ''
-    alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    autoscale: 'False'
-    axislabels: 'True'
-    color1: '"blue"'
-    color10: '"dark blue"'
-    color2: '"red"'
-    color3: '"green"'
-    color4: '"black"'
-    color5: '"cyan"'
-    color6: '"magenta"'
-    color7: '"yellow"'
-    color8: '"dark red"'
-    color9: '"dark green"'
-    comment: ''
-    grid: 'False'
-    gui_hint: ''
-    label1: ''
-    label10: ''
-    label2: ''
-    label3: ''
-    label4: ''
-    label5: ''
-    label6: ''
-    label7: ''
-    label8: ''
-    label9: ''
-    legend: 'True'
-    marker1: '0'
-    marker10: '0'
-    marker2: '0'
-    marker3: '0'
-    marker4: '0'
-    marker5: '0'
-    marker6: '0'
-    marker7: '0'
-    marker8: '0'
-    marker9: '0'
-    name: '""'
-    nconnections: '1'
-    size: '1024'
-    style1: '0'
-    style10: '0'
-    style2: '0'
-    style3: '0'
-    style4: '0'
-    style5: '0'
-    style6: '0'
-    style7: '0'
-    style8: '0'
-    style9: '0'
-    tr_chan: '0'
-    tr_level: '0.0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_slope: qtgui.TRIG_SLOPE_POS
-    tr_tag: '""'
-    type: complex
-    update_time: '0.10'
-    width1: '1'
-    width10: '1'
-    width2: '1'
-    width3: '1'
-    width4: '1'
-    width5: '1'
-    width6: '1'
-    width7: '1'
-    width8: '1'
-    width9: '1'
-    xmax: '2'
-    xmin: '-2'
-    ymax: '2'
-    ymin: '-2'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1536, 416.0]
-    rotation: 0
-    state: enabled
-- name: qtgui_freq_sink_x_0
-  id: qtgui_freq_sink_x
-  parameters:
-    affinity: ''
-    alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    autoscale: 'False'
-    average: '1.0'
-    axislabels: 'True'
-    bw: samp_rate
-    color1: '"blue"'
-    color10: '"dark blue"'
-    color2: '"red"'
-    color3: '"green"'
-    color4: '"black"'
-    color5: '"cyan"'
-    color6: '"magenta"'
-    color7: '"yellow"'
-    color8: '"dark red"'
-    color9: '"dark green"'
-    comment: ''
-    ctrlpanel: 'False'
-    fc: '0'
-    fftsize: '1024'
-    freqhalf: 'True'
-    grid: 'False'
-    gui_hint: ''
-    label: Relative Gain
-    label1: ''
-    label10: ''''''
-    label2: ''''''
-    label3: ''''''
-    label4: ''''''
-    label5: ''''''
-    label6: ''''''
-    label7: ''''''
-    label8: ''''''
-    label9: ''''''
-    legend: 'True'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    name: '""'
-    nconnections: '1'
-    norm_window: 'False'
-    showports: 'False'
-    tr_chan: '0'
-    tr_level: '0.0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_tag: '""'
-    type: complex
-    units: dB
-    update_time: '0.10'
-    width1: '1'
-    width10: '1'
-    width2: '1'
-    width3: '1'
-    width4: '1'
-    width5: '1'
-    width6: '1'
-    width7: '1'
-    width8: '1'
-    width9: '1'
-    wintype: window.WIN_BLACKMAN_hARRIS
-    ymax: '10'
-    ymin: '-140'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [992, 4.0]
-    rotation: 0
-    state: enabled
 
 connections:
-- [digital_constellation_modulator_0, '0', fir_filter_xxx_0, '0']
-- [digital_symbol_sync_xx_0, '0', qtgui_const_sink_x_0, '0']
+- [blocks_multiply_const_vxx_0, '0', blocks_file_sink_0, '0']
+- [digital_constellation_modulator_0, '0', blocks_multiply_const_vxx_0, '0']
 - [epy_block_0, msg_out, pdu_pdu_to_tagged_stream_0, pdus]
-- [fir_filter_xxx_0, '0', digital_symbol_sync_xx_0, '0']
-- [fir_filter_xxx_0, '0', qtgui_freq_sink_x_0, '0']
 - [network_socket_pdu_0, pdus, epy_block_0, msg_in]
 - [pdu_pdu_to_tagged_stream_0, '0', digital_constellation_modulator_0, '0']
 
 metadata:
   file_format: 1
-  grc_version: 3.10.12.0
+  grc_version: 3.10.9.2

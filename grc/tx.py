@@ -7,27 +7,24 @@
 # GNU Radio Python Flow Graph
 # Title: QAM16 video link Transmitter
 # Author: Simon Randiak
-# GNU Radio version: 3.10.12.0
+# GNU Radio version: 3.10.9.2
 
 from PyQt5 import Qt
 from gnuradio import qtgui
+from gnuradio import blocks
 from gnuradio import digital
-from gnuradio import filter
-from gnuradio.filter import firdes
-from gnuradio import gr, pdu
-from gnuradio import network
-import sip
-import threading
-import tx_epy_block_0 as epy_block_0  # embedded python block
 from gnuradio import gr
 from gnuradio.filter import firdes
 from gnuradio.fft import window
 import sys
 import signal
+from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
-
+from gnuradio import gr, pdu
+from gnuradio import network
+import tx_epy_block_0 as epy_block_0  # embedded python block
 
 
 
@@ -54,7 +51,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
 
         try:
             geometry = self.settings.value("geometry")
@@ -62,7 +59,6 @@ class tx(gr.top_block, Qt.QWidget):
                 self.restoreGeometry(geometry)
         except BaseException as exc:
             print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
-        self.flowgraph_started = threading.Event()
 
         ##################################################
         # Variables
@@ -79,106 +75,9 @@ class tx(gr.top_block, Qt.QWidget):
         # Blocks
         ##################################################
 
-        self.qtgui_freq_sink_x_0 = qtgui.freq_sink_c(
-            1024, #size
-            window.WIN_BLACKMAN_hARRIS, #wintype
-            0, #fc
-            samp_rate, #bw
-            "", #name
-            1,
-            None # parent
-        )
-        self.qtgui_freq_sink_x_0.set_update_time(0.10)
-        self.qtgui_freq_sink_x_0.set_y_axis((-140), 10)
-        self.qtgui_freq_sink_x_0.set_y_label('Relative Gain', 'dB')
-        self.qtgui_freq_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
-        self.qtgui_freq_sink_x_0.enable_autoscale(False)
-        self.qtgui_freq_sink_x_0.enable_grid(False)
-        self.qtgui_freq_sink_x_0.set_fft_average(1.0)
-        self.qtgui_freq_sink_x_0.enable_axis_labels(True)
-        self.qtgui_freq_sink_x_0.enable_control_panel(False)
-        self.qtgui_freq_sink_x_0.set_fft_window_normalized(False)
-
-
-
-        labels = ['', '', '', '', '',
-            '', '', '', '', '']
-        widths = [1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1]
-        colors = ["blue", "red", "green", "black", "cyan",
-            "magenta", "yellow", "dark red", "dark green", "dark blue"]
-        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 1.0, 1.0, 1.0, 1.0]
-
-        for i in range(1):
-            if len(labels[i]) == 0:
-                self.qtgui_freq_sink_x_0.set_line_label(i, "Data {0}".format(i))
-            else:
-                self.qtgui_freq_sink_x_0.set_line_label(i, labels[i])
-            self.qtgui_freq_sink_x_0.set_line_width(i, widths[i])
-            self.qtgui_freq_sink_x_0.set_line_color(i, colors[i])
-            self.qtgui_freq_sink_x_0.set_line_alpha(i, alphas[i])
-
-        self._qtgui_freq_sink_x_0_win = sip.wrapinstance(self.qtgui_freq_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_layout.addWidget(self._qtgui_freq_sink_x_0_win)
-        self.qtgui_const_sink_x_0 = qtgui.const_sink_c(
-            1024, #size
-            "", #name
-            1, #number of inputs
-            None # parent
-        )
-        self.qtgui_const_sink_x_0.set_update_time(0.10)
-        self.qtgui_const_sink_x_0.set_y_axis((-2), 2)
-        self.qtgui_const_sink_x_0.set_x_axis((-2), 2)
-        self.qtgui_const_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, "")
-        self.qtgui_const_sink_x_0.enable_autoscale(False)
-        self.qtgui_const_sink_x_0.enable_grid(False)
-        self.qtgui_const_sink_x_0.enable_axis_labels(True)
-
-
-        labels = ['', '', '', '', '',
-            '', '', '', '', '']
-        widths = [1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1]
-        colors = ["blue", "red", "green", "black", "cyan",
-            "magenta", "yellow", "dark red", "dark green", "dark blue"]
-        styles = [0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0]
-        markers = [0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0]
-        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 1.0, 1.0, 1.0, 1.0]
-
-        for i in range(1):
-            if len(labels[i]) == 0:
-                self.qtgui_const_sink_x_0.set_line_label(i, "Data {0}".format(i))
-            else:
-                self.qtgui_const_sink_x_0.set_line_label(i, labels[i])
-            self.qtgui_const_sink_x_0.set_line_width(i, widths[i])
-            self.qtgui_const_sink_x_0.set_line_color(i, colors[i])
-            self.qtgui_const_sink_x_0.set_line_style(i, styles[i])
-            self.qtgui_const_sink_x_0.set_line_marker(i, markers[i])
-            self.qtgui_const_sink_x_0.set_line_alpha(i, alphas[i])
-
-        self._qtgui_const_sink_x_0_win = sip.wrapinstance(self.qtgui_const_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_layout.addWidget(self._qtgui_const_sink_x_0_win)
         self.pdu_pdu_to_tagged_stream_0 = pdu.pdu_to_tagged_stream(gr.types.byte_t, 'packet_len')
         self.network_socket_pdu_0 = network.socket_pdu('UDP_SERVER', '127.0.0.1', '1234', 10000, False)
-        self.fir_filter_xxx_0 = filter.fir_filter_ccc(1, rrc_taps)
-        self.fir_filter_xxx_0.declare_sample_delay(0)
         self.epy_block_0 = epy_block_0.blk()
-        self.digital_symbol_sync_xx_0 = digital.symbol_sync_cc(
-            digital.TED_GARDNER,
-            sps,
-            0.045,
-            1.0,
-            1.0,
-            1.5,
-            1,
-            digital.constellation_bpsk().base(),
-            digital.IR_MMSE_8TAP,
-            128,
-            [])
         self.digital_constellation_modulator_0 = digital.generic_mod(
             constellation=qam,
             differential=False,
@@ -188,6 +87,9 @@ class tx(gr.top_block, Qt.QWidget):
             verbose=False,
             log=False,
             truncate=False)
+        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(0.31622776601)
+        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/simon/SDR/videolink/dump.iq', False)
+        self.blocks_file_sink_0.set_unbuffered(False)
 
 
         ##################################################
@@ -195,15 +97,13 @@ class tx(gr.top_block, Qt.QWidget):
         ##################################################
         self.msg_connect((self.epy_block_0, 'msg_out'), (self.pdu_pdu_to_tagged_stream_0, 'pdus'))
         self.msg_connect((self.network_socket_pdu_0, 'pdus'), (self.epy_block_0, 'msg_in'))
-        self.connect((self.digital_constellation_modulator_0, 0), (self.fir_filter_xxx_0, 0))
-        self.connect((self.digital_symbol_sync_xx_0, 0), (self.qtgui_const_sink_x_0, 0))
-        self.connect((self.fir_filter_xxx_0, 0), (self.digital_symbol_sync_xx_0, 0))
-        self.connect((self.fir_filter_xxx_0, 0), (self.qtgui_freq_sink_x_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_file_sink_0, 0))
+        self.connect((self.digital_constellation_modulator_0, 0), (self.blocks_multiply_const_vxx_0, 0))
         self.connect((self.pdu_pdu_to_tagged_stream_0, 0), (self.digital_constellation_modulator_0, 0))
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -225,7 +125,6 @@ class tx(gr.top_block, Qt.QWidget):
         self.samp_rate = samp_rate
         self.set_rrc_taps(firdes.root_raised_cosine(1.0, self.samp_rate, self.symbol_rate, self.roll_off, (11*self.sps)))
         self.set_sps(int(self.samp_rate/self.symbol_rate))
-        self.qtgui_freq_sink_x_0.set_frequency_range(0, self.samp_rate)
 
     def get_sps(self):
         return self.sps
@@ -233,7 +132,6 @@ class tx(gr.top_block, Qt.QWidget):
     def set_sps(self, sps):
         self.sps = sps
         self.set_rrc_taps(firdes.root_raised_cosine(1.0, self.samp_rate, self.symbol_rate, self.roll_off, (11*self.sps)))
-        self.digital_symbol_sync_xx_0.set_sps(self.sps)
 
     def get_roll_off(self):
         return self.roll_off
@@ -247,7 +145,6 @@ class tx(gr.top_block, Qt.QWidget):
 
     def set_rrc_taps(self, rrc_taps):
         self.rrc_taps = rrc_taps
-        self.fir_filter_xxx_0.set_taps(self.rrc_taps)
 
     def get_qam(self):
         return self.qam
@@ -265,7 +162,6 @@ def main(top_block_cls=tx, options=None):
     tb = top_block_cls()
 
     tb.start()
-    tb.flowgraph_started.set()
 
     tb.show()
 

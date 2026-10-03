@@ -72,3 +72,8 @@ Constellation Modulator:
 
 Priemerny vykon Es je 10
 Eb = 10/log2(4)
+
+### Problemy
+Vykon pre PLL hra velku rolu preto je signal dobre normalizovat na jednotkovy vykon aby sedelo kD gain
+
+Pri gardner TED je rozdiel medzi akumulatorovou a indexovou verziou
