@@ -70,6 +70,43 @@ namespace Modem
 
     // Group Delay as lpf_delay = (len(lpf_taps) - 1) // 2
 
+    // Implementation from https://wiki.gnuradio.org/index.php/AGC
+    class AGC
+    {
+        public:
+            AGC(float reference, float gain, float rate, float min_gain, float max_gain)
+            {
+                _max_gain = max_gain;
+                _min_gain = min_gain;
+                _rate = rate;
+                _reference = reference;
+                _gain = gain;
+            }
+
+            void process(const std::vector<cf32> &input, std::vector<cf32> &output)
+            {
+                output.clear();
+                output.reserve(input.size());
+
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    cf32 sample = input[i] * _gain;
+                    output.push_back(sample);
+                    float amplitude = std::abs(sample);
+                    float difference = _reference - amplitude;
+                    float result = difference * _rate;
+                    _gain += result;
+                    _gain = std::clamp(_gain, _min_gain, _max_gain);
+                }
+            }
+        private:
+            float _max_gain;
+            float _min_gain;
+            float _rate;
+            float _reference;
+            float _gain;
+    };
+
     class FIRFilter
     {
         public:
@@ -347,12 +384,6 @@ namespace Modem
         }
 
     };
-
-    class FrameSynchronizer
-    {
-        private:
-            std::array<uint8_t, 4> _sync_word = {0x1A, 0xCF, 0xFC, 0x1D};
-    };
 }
 
 
@@ -408,16 +439,20 @@ int main()
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
     Modem::DDPLL pll_loop(0.005f, 1.0f);
     Modem::GardnerTED timing_loop(0.005, 8);
+    Modem::AGC agc(0.93f, 10.0f, 1.35e-3f, 1e-4f, 1e4f);
 
     std::vector<Modem::cf32> iq_data = read_iq_samples();
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
+    std::vector<Modem::cf32> agc_data;
     std::vector<Modem::cf32> time_synchronized_data;
     std::vector<Modem::cf32> phase_synchronized_data;
 
     low_pass_filter.process(iq_data, filtered_data);
     rrc_filter.process(filtered_data, matched_filtered_data);
-    timing_loop.process(matched_filtered_data, time_synchronized_data);
+    agc.process(matched_filtered_data, agc_data);
+
+    timing_loop.process(agc_data, time_synchronized_data);
     pll_loop.process(time_synchronized_data, phase_synchronized_data);
 
     write_iq_file("symbols.cf32", phase_synchronized_data);
