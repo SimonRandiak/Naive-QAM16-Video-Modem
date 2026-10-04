@@ -184,6 +184,16 @@ namespace Modem
             _t_prev -= static_cast<float>(drop);
         }
 
+        void reset()
+        {
+            _v = 0.0f;
+            _integral = 0.0f;
+            _prev_symbol = {0.0f, 0.0f};
+            _t = _sps;
+            _t_prev = 0;
+            _working_buffer.clear();
+        }
+
     private:
         cf32 interp(float t) const
         {
@@ -197,6 +207,87 @@ namespace Modem
         float _v = 0.0f, _integral = 0.0f, _vmax = 0.15f;
         cf32  _prev_symbol{0.0f, 0.0f};
         std::vector<cf32> _working_buffer;
+    };
+
+    class DDPLL
+    {
+    public:
+        DDPLL(float BnTs, float kD = 1.0f)
+        {
+            _coeffs.K_D = kD;
+            _coeffs.calculate(BnTs);
+        }
+
+        void process(const std::vector<cf32> &input, std::vector<cf32> &output)
+        {
+            output.clear();
+            output.reserve(input.size());
+            for (std::size_t i = 0; i < input.size(); i++)
+            {
+                cf32 current = input[i];
+                cf32 derotated = current * std::polar(1.0f, -_phase);
+                output.push_back(derotated);
+
+                cf32 nearest_point = _find_nearest(derotated);
+                float error = _cross_product(derotated, nearest_point);
+
+                _integral += (_coeffs.K_I * error);
+
+                _phase += _integral + (_coeffs.K_P * error);
+                _wrap_phase();
+
+            }
+        }
+
+    private:
+
+        PLLCoefficients _coeffs;
+        float _integral = 0; // Frequency
+        float _phase = 0;
+
+        static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) -> Es = 1
+
+        static constexpr std::array<cf32, 16> _points = {{
+            {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
+            {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
+            {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
+            {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
+        }};
+
+        cf32 _find_nearest(const cf32 &a)
+        {
+            cf32 closest{0.0f, 0.0f};
+            float minimal_distance = 10;
+            for (std::size_t i = 0; i < _points.size(); i++)
+            {
+                cf32 point = _points[i];
+                float distance = std::abs(a - point);
+                if (distance < minimal_distance)
+                {
+                    minimal_distance = distance;
+                    closest = point;
+                }
+            }
+            return closest;
+        }
+
+        float _cross_product(const cf32 &a, const cf32 &b)
+        {
+            return (b.real() * a.imag()) - (b.imag() * a.real());
+        }
+
+        void _wrap_phase()
+        {
+            while (_phase >= 2*std::numbers::pi)
+            {
+                _phase -= 2*std::numbers::pi;
+            }
+                while (_phase < 0)
+            {
+                _phase += 2*std::numbers::pi;
+            }
+        }
+
     };
 }
 
@@ -246,25 +337,25 @@ inline bool write_iq_file(const std::string& path,
     return write_iq_file(path, data.data(), data.size(), append);
 }
 
-
-
-
 int main()
 {
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
+    Modem::DDPLL pll_loop(0.005f, 1.0f);
     Modem::GardnerTED timing_loop(0.005, 8);
 
     std::vector<Modem::cf32> iq_data = read_iq_samples();
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
     std::vector<Modem::cf32> time_synchronized_data;
+    std::vector<Modem::cf32> phase_synchronized_data;
 
     low_pass_filter.process(iq_data, filtered_data);
     rrc_filter.process(filtered_data, matched_filtered_data);
     timing_loop.process(matched_filtered_data, time_synchronized_data);
+    pll_loop.process(time_synchronized_data, phase_synchronized_data);
 
-    write_iq_file("symbols.cf32", time_synchronized_data);
+    write_iq_file("symbols.cf32", phase_synchronized_data);
     
 
 }

@@ -77,3 +77,6 @@ Eb = 10/log2(4)
 Vykon pre PLL hra velku rolu preto je signal dobre normalizovat na jednotkovy vykon aby sedelo kD gain
 
 Pri gardner TED je rozdiel medzi akumulatorovou a indexovou verziou
+
+Pozor pri cross product znamienku slucky a pri faze a integraly
+Nakolko |a x b| da kladne cislo ale |b x a| moze dat zaporne cislo 
