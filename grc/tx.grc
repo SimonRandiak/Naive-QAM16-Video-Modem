@@ -154,7 +154,7 @@ blocks:
     bus_structure: null
     coordinate: [1016, 252.0]
     rotation: 0
-    state: enabled
+    state: bypassed
 - name: digital_constellation_modulator_0
   id: digital_constellation_modulator
   parameters:

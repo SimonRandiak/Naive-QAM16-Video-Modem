@@ -87,7 +87,6 @@ class tx(gr.top_block, Qt.QWidget):
             verbose=False,
             log=False,
             truncate=False)
-        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(0.31622776601)
         self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/simon/SDR/videolink/dump.iq', False)
         self.blocks_file_sink_0.set_unbuffered(False)
 
@@ -97,8 +96,7 @@ class tx(gr.top_block, Qt.QWidget):
         ##################################################
         self.msg_connect((self.epy_block_0, 'msg_out'), (self.pdu_pdu_to_tagged_stream_0, 'pdus'))
         self.msg_connect((self.network_socket_pdu_0, 'pdus'), (self.epy_block_0, 'msg_in'))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_file_sink_0, 0))
-        self.connect((self.digital_constellation_modulator_0, 0), (self.blocks_multiply_const_vxx_0, 0))
+        self.connect((self.digital_constellation_modulator_0, 0), (self.blocks_file_sink_0, 0))
         self.connect((self.pdu_pdu_to_tagged_stream_0, 0), (self.digital_constellation_modulator_0, 0))
 
 
