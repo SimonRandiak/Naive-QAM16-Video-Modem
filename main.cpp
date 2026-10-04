@@ -347,7 +347,14 @@ namespace Modem
         }
 
     };
+
+    class FrameSynchronizer
+    {
+        private:
+            std::array<uint8_t, 4> _sync_word = {0x1A, 0xCF, 0xFC, 0x1D};
+    };
 }
+
 
 std::vector<Modem::cf32> read_iq_samples()
 {
