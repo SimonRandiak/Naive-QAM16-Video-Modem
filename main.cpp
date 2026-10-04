@@ -4,6 +4,8 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <limits>
+#include <cstdint>
 
 #include <fstream>
 
@@ -239,13 +241,19 @@ namespace Modem
             }
         }
 
+        void reset()
+        {
+            _integral = 0;
+            _phase = 0;
+        }
+
     private:
 
         PLLCoefficients _coeffs;
         float _integral = 0; // Frequency
         float _phase = 0;
 
-        static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) -> Es = 1
+        static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
         static constexpr std::array<cf32, 16> _points = {{
             {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
@@ -257,7 +265,7 @@ namespace Modem
         cf32 _find_nearest(const cf32 &a)
         {
             cf32 closest{0.0f, 0.0f};
-            float minimal_distance = 10;
+            float minimal_distance = std::numeric_limits<float>::max();
             for (std::size_t i = 0; i < _points.size(); i++)
             {
                 cf32 point = _points[i];
@@ -286,6 +294,56 @@ namespace Modem
             {
                 _phase += 2*std::numbers::pi;
             }
+        }
+    };
+
+    class BitSlicer
+    {
+        public:
+        void process(const std::vector<cf32> &input, std::vector<uint8_t> &output)
+        {
+            output.clear();
+            output.reserve(input.size());
+            for (std::size_t i = 0; i < input.size(); i++)
+            {
+                uint8_t bits = _find_nearest(input[i]);
+
+                output.push_back(bits);
+            }
+        }    
+
+        private:
+            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
+
+            static constexpr std::array<cf32, 16> _points = {{
+                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
+                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
+                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
+                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
+            }};
+
+            static constexpr std::array<uint8_t, 16> _bits = {{
+                0b0000, 0b0001, 0b0010, 0b0011,
+                0b0100, 0b0101, 0b0110, 0b0111,
+                0b1000, 0b1001, 0b1010, 0b1011,
+                0b1100, 0b1101, 0b1110, 0b1111,
+            }};
+
+        uint8_t _find_nearest(const cf32 &a)
+        {
+            uint8_t closest = 0b0000;
+            float minimal_distance = std::numeric_limits<float>::max();
+            for (std::size_t i = 0; i < _points.size(); i++)
+            {
+                cf32 point = _points[i];
+                float distance = std::abs(a - point);
+                if (distance < minimal_distance)
+                {
+                    minimal_distance = distance;
+                    closest = _bits[i];
+                }
+            }
+            return closest;
         }
 
     };
