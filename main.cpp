@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdint>
+#include <numbers>
 
 #include <fstream>
 
@@ -87,7 +88,6 @@ namespace Modem
             {
                 output.clear();
                 output.reserve(input.size());
-
                 for (std::size_t i = 0; i < input.size(); i++)
                 {
                     cf32 sample = input[i] * _gain;
@@ -105,6 +105,68 @@ namespace Modem
             float _rate;
             float _reference;
             float _gain;
+    };
+
+    // Implementation from https://doi.org/10.1109/TCOM.1975.1092840
+    class DDAGC
+    {
+        public:
+            DDAGC(float gain, float rate, float min_gain, float max_gain)
+            {
+                _max_gain = max_gain;
+                _min_gain = min_gain;
+                _rate = rate;
+                _gain = gain;
+            }
+
+            void process(const std::vector<cf32> &input, std::vector<cf32> &output)
+            {
+                output.clear();
+                output.reserve(input.size());
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    cf32 sample = input[i] * _gain;
+                    cf32 nearest = _find_nearest(sample);
+                    output.push_back(sample);
+
+                    float error_i = std::abs(nearest.real()) - std::abs(sample.real());
+                    float error_q = std::abs(nearest.imag()) - std::abs(sample.imag());
+
+                    _gain += _rate * (error_i + error_q);
+                    _gain = std::clamp(_gain, _min_gain, _max_gain);
+                }
+            }
+        private:
+            float _max_gain;
+            float _min_gain;
+            float _rate;
+            float _gain = 1;
+
+            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
+
+            static constexpr std::array<cf32, 16> _points = {{
+                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
+                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
+                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
+                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
+            }};
+
+            cf32 _find_nearest(const cf32 &a)
+            {
+                cf32 closest{0.0f, 0.0f};
+                float minimal_distance = std::numeric_limits<float>::max();
+                for (std::size_t i = 0; i < _points.size(); i++)
+                {
+                    cf32 point = _points[i];
+                    float distance = std::abs(a - point);
+                    if (distance < minimal_distance)
+                    {
+                        minimal_distance = distance;
+                        closest = point;
+                    }
+                }
+                return closest;
+            }
     };
 
     class FIRFilter
@@ -200,7 +262,7 @@ namespace Modem
         void process(const std::vector<cf32> &input, std::vector<cf32> &output)
         {
             _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
-
+            output.clear();
             while (_t + 1.0f < static_cast<float>(_working_buffer.size()))
             {
                 const cf32 y = interp(_t);
@@ -242,7 +304,7 @@ namespace Modem
 
         PLLCoefficients _coeffs;
         float _sps;
-        float _t, _t_prev;
+        double _t, _t_prev;
         float _v = 0.0f, _integral = 0.0f, _vmax = 0.15f;
         cf32  _prev_symbol{0.0f, 0.0f};
         std::vector<cf32> _working_buffer;
@@ -337,17 +399,18 @@ namespace Modem
     class BitSlicer
     {
         public:
-        void process(const std::vector<cf32> &input, std::vector<uint8_t> &output)
-        {
-            output.clear();
-            output.reserve(input.size());
-            for (std::size_t i = 0; i < input.size(); i++)
+            BitSlicer() = default;
+            void process(const std::vector<cf32> &input, std::vector<uint8_t> &output)
             {
-                uint8_t bits = _find_nearest(input[i]);
+                output.clear();
+                output.reserve(input.size());
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    uint8_t bits = _find_nearest(input[i]);
 
-                output.push_back(bits);
-            }
-        }    
+                    output.push_back(bits);
+                }
+            }    
 
         private:
             static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
@@ -382,6 +445,129 @@ namespace Modem
             }
             return closest;
         }
+
+    };
+
+    struct Packet
+    {
+        uint32_t sync_word = 0;
+        uint16_t length = 0;
+        std::vector<uint8_t> data;
+        uint16_t crc = 0;
+    };
+
+    class FrameSynchronizer
+    {
+        public:
+            FrameSynchronizer() = default;
+            void process(const std::vector<uint8_t> &input, std::vector<Packet> &output)
+            {
+                uint32_t shift_register = 0;
+                output.clear();
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    shift_register = (shift_register << 4) | (input[i] & 0x0F);
+                    if (_sync_word == shift_register)
+                    {
+                        std::size_t sync_start = i - 7;
+                        auto packet = _create_packet(input, sync_start);
+                        if (packet.length != 0)
+                        {
+                            output.push_back(packet);
+                        }
+                    }
+                }
+            }
+        private:
+            uint32_t _sync_word = 0x1ACFFC1D;
+
+            uint8_t _bits_to_uint8_t(const std::vector<uint8_t>& input, std::size_t i)
+            {
+                return static_cast<uint8_t>(
+                    (input[i] << 4) |
+                    (input[i + 1] & 0x0F)
+                );
+            }
+
+            uint16_t _bits_to_uint16_t(const std::vector<uint8_t>& input, std::size_t i)
+            {
+                uint16_t high = _bits_to_uint8_t(input, i);
+                uint16_t low  = _bits_to_uint8_t(input, i + 2);
+
+                return static_cast<uint16_t>((high << 8) | low);
+            }
+
+            Packet _create_packet(const std::vector<uint8_t>& input, std::size_t index)
+            {
+                Packet p{};
+
+                if (index + 12 > input.size())
+                {
+                    p.length = 0;
+                    return p;
+                }
+
+                p.sync_word = _sync_word;
+                p.length = _bits_to_uint16_t(input, index + 8);
+                if (p.length > 1800)
+                {
+                    p.length = 0;
+                    return p;
+                }
+
+                const std::size_t payload_start = index + 12;
+                const std::size_t payload_end = payload_start + p.length * 2;
+                const std::size_t crc_start = payload_end;
+                const std::size_t packet_end = crc_start + 4;
+
+                if (packet_end > input.size())
+                {
+                    p.length = 0;
+                    return p;
+                }
+
+                p.data.reserve(p.length);
+
+                for (std::size_t j = 0; j < p.length; ++j)
+                {
+                    p.data.push_back(_bits_to_uint8_t(input, payload_start + j * 2));
+                }
+
+                p.crc = _bits_to_uint16_t(input, crc_start);
+                uint16_t crc = _crc16(p.data.data(), p.length);
+                if (p.crc != crc)
+                {
+                    p.length = 0;
+                    return p;
+                }
+
+                return p;
+            }
+
+            // Source - https://stackoverflow.com/a/44947877
+            // Posted by sarvankumar_t, modified by community. See post 'Timeline' for change history
+            // Retrieved 2026-10-06, License - CC BY-SA 4.0
+            // Modified by me
+
+            uint16_t _crc16(const unsigned char* data, size_t length)
+            {
+                uint16_t crc = 0xFFFF;
+
+                while (length--)
+                {
+                    crc ^= static_cast<uint16_t>(*data++) << 8;
+
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        if (crc & 0x8000)
+                            crc = static_cast<uint16_t>((crc << 1) ^ 0x1021);
+                        else
+                            crc = static_cast<uint16_t>(crc << 1);
+                    }
+                }
+
+                return crc;
+            }
 
     };
 }
@@ -433,20 +619,43 @@ inline bool write_iq_file(const std::string& path,
     return write_iq_file(path, data.data(), data.size(), append);
 }
 
+
+void write_video(
+    const std::vector<Modem::Packet>& packets,
+    const std::string& filename)
+{
+    std::ofstream file(
+        filename,
+        std::ios::binary | std::ios::trunc);
+
+    for (const auto& packet : packets)
+    {
+        file.write(
+            reinterpret_cast<const char*>(packet.data.data()),
+            packet.data.size());
+    }
+}
 int main()
 {
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
-    Modem::DDPLL pll_loop(0.005f, 1.0f);
+    Modem::DDPLL pll_loop(0.015f, 1.0f);
     Modem::GardnerTED timing_loop(0.005, 8);
-    Modem::AGC agc(0.93f, 10.0f, 1.35e-3f, 1e-4f, 1e4f);
+    Modem::AGC agc(0.93f, 0.4, 1.15e-5f, 1e-4f, 1e4f);
+    Modem::DDAGC dd_agc(1, 0.016, 0.5, 2);
+    Modem::BitSlicer slicer;
+    Modem::FrameSynchronizer frame_synchronizer;
 
     std::vector<Modem::cf32> iq_data = read_iq_samples();
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
     std::vector<Modem::cf32> agc_data;
+    std::vector<Modem::cf32> dd_agc_data;
     std::vector<Modem::cf32> time_synchronized_data;
     std::vector<Modem::cf32> phase_synchronized_data;
+    std::vector<uint8_t> bits;
+    std::vector<Modem::Packet> packets;
+
 
     low_pass_filter.process(iq_data, filtered_data);
     rrc_filter.process(filtered_data, matched_filtered_data);
@@ -454,8 +663,11 @@ int main()
 
     timing_loop.process(agc_data, time_synchronized_data);
     pll_loop.process(time_synchronized_data, phase_synchronized_data);
+    dd_agc.process(phase_synchronized_data, dd_agc_data);
+    slicer.process(dd_agc_data, bits);
+    frame_synchronizer.process(bits, packets);
 
     write_iq_file("symbols.cf32", phase_synchronized_data);
-    
+    write_video(packets, "capture.ts");
 
 }

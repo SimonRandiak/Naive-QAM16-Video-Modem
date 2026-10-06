@@ -7,24 +7,26 @@
 # GNU Radio Python Flow Graph
 # Title: QAM16 video link Transmitter
 # Author: Simon Randiak
-# GNU Radio version: 3.10.9.2
+# GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
 from gnuradio import qtgui
 from gnuradio import blocks
 from gnuradio import digital
+from gnuradio import gr, pdu
+from gnuradio import network
+from gnuradio.filter import firdes
+import threading
+import tx_epy_block_0 as epy_block_0  # embedded python block
 from gnuradio import gr
 from gnuradio.filter import firdes
 from gnuradio.fft import window
 import sys
 import signal
-from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
-from gnuradio import gr, pdu
-from gnuradio import network
-import tx_epy_block_0 as epy_block_0  # embedded python block
+
 
 
 
@@ -51,7 +53,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("GNU Radio", "tx")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
 
         try:
             geometry = self.settings.value("geometry")
@@ -59,6 +61,7 @@ class tx(gr.top_block, Qt.QWidget):
                 self.restoreGeometry(geometry)
         except BaseException as exc:
             print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
+        self.flowgraph_started = threading.Event()
 
         ##################################################
         # Variables
@@ -69,7 +72,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.roll_off = roll_off = 0.4
         self.rrc_taps = rrc_taps = firdes.root_raised_cosine(1.0, samp_rate,symbol_rate, roll_off, (11*sps))
         self.qam = qam = digital.constellation_rect([-3-3j, -3-1j, -3+3j, -3+1j, -1-3j, -1-1j, -1+3j, -1+1j, 3-3j, 3-1j, 3+3j, 3+1j, 1-3j, 1-1j, 1+3j, 1+1j], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-        4, 4, 4, 1, 1).base()
+        4, 4, 4, 2, 2).base()
 
         ##################################################
         # Blocks
@@ -87,7 +90,7 @@ class tx(gr.top_block, Qt.QWidget):
             verbose=False,
             log=False,
             truncate=False)
-        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/simon/SDR/videolink/dump.iq', False)
+        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/simon/DSP/video-link/dump.iq', False)
         self.blocks_file_sink_0.set_unbuffered(False)
 
 
@@ -101,7 +104,7 @@ class tx(gr.top_block, Qt.QWidget):
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("GNU Radio", "tx")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -160,6 +163,7 @@ def main(top_block_cls=tx, options=None):
     tb = top_block_cls()
 
     tb.start()
+    tb.flowgraph_started.set()
 
     tb.show()
 

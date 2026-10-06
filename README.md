@@ -82,3 +82,10 @@ Vzorec pre v kde sa deli v-ckom je kvoli posunu aby ked je e < 0 aby to islo spr
 Pozor pri cross product znamienku slucky a pri faze a integraly
 Nakolko |a x b| da kladne cislo ale |b x a| moze dat zaporne cislo 
 
+FFMpeg stuffuje data 0xFF co nerobi dobre AGC nakolko sa lockne na tuto amplitudu a ked pride iny paket tak bude velky skok
+Treba to riesit scramblerom
+Prvotny AGC gain bol moc velky a teda restreloval
+
+Gardner TED saturacia
+(Vystup z Claude AI)
+EVM rástlo s pozíciou v súbore. Po desatinách súboru: 2,5 → 3,5 → 4,7 → 5,1 → 5,1 → 9,1 → 11 → 12 %. Signál sa v čase nemenil (výkon bol konštantný, šum tiež), takže chyba musela závisieť od niečoho, čo rastie s časom spracovania. To je podozrivé vždy: absolútny čas, počítadlo, index, akumulátor. Kanál si „nepamätá“, koľko vzoriek už prešlo, kód áno.
