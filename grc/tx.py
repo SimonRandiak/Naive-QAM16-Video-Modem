@@ -90,8 +90,8 @@ class tx(gr.top_block, Qt.QWidget):
             verbose=False,
             log=False,
             truncate=False)
-        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/simon/DSP/video-link/dump.iq', False)
-        self.blocks_file_sink_0.set_unbuffered(False)
+        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/tmp/iq', True)
+        self.blocks_file_sink_0.set_unbuffered(True)
 
 
         ##################################################

@@ -7,8 +7,8 @@
 #include <limits>
 #include <cstdint>
 #include <numbers>
-
 #include <fstream>
+
 
 namespace Modem
 {
@@ -635,6 +635,19 @@ void write_video(
             packet.data.size());
     }
 }
+
+void write_video_to_stdout(const std::vector<Modem::Packet>& packets)
+{
+    for (const auto& packet : packets)
+    {
+        std::cout.write(
+            reinterpret_cast<const char*>(packet.data.data()),
+            static_cast<std::streamsize>(packet.data.size()));
+    }
+
+    std::cout.flush();
+}
+
 int main()
 {
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
@@ -646,7 +659,7 @@ int main()
     Modem::BitSlicer slicer;
     Modem::FrameSynchronizer frame_synchronizer;
 
-    std::vector<Modem::cf32> iq_data = read_iq_samples();
+    std::vector<Modem::cf32> iq_data(4096);
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
     std::vector<Modem::cf32> agc_data;
@@ -666,8 +679,8 @@ int main()
     dd_agc.process(phase_synchronized_data, dd_agc_data);
     slicer.process(dd_agc_data, bits);
     frame_synchronizer.process(bits, packets);
+    write_video_to_stdout(packets);
+    
 
-    write_iq_file("symbols.cf32", phase_synchronized_data);
-    write_video(packets, "capture.ts");
 
 }

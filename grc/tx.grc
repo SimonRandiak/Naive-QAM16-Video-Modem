@@ -120,11 +120,11 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    append: 'False'
+    append: 'True'
     comment: ''
-    file: /home/simon/DSP/video-link/dump.iq
+    file: /tmp/iq
     type: complex
-    unbuffered: 'False'
+    unbuffered: 'True'
     vlen: '1'
   states:
     bus_sink: false
