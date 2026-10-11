@@ -9,6 +9,9 @@
 #include <numbers>
 #include <fstream>
 
+#include <zmq.hpp>
+#include <unsupported/Eigen/FFT>
+
 
 namespace Modem
 {
@@ -70,6 +73,114 @@ namespace Modem
     });
 
     // Group Delay as lpf_delay = (len(lpf_taps) - 1) // 2
+
+    // Thisawill be based on 4th power frequency estimation
+    class FrequencyEstimator
+    {
+        public:
+            FrequencyEstimator(double sampling_frequency)
+            {
+                _sampling_frequency = sampling_frequency;
+            }
+            void process(const std::vector<cf32> &input, std::vector<cf32> &output)
+            {
+                output.clear();
+                if (_freeze == true)
+                {
+                    _apply_offset(output);
+                    return;
+                }
+                _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
+                if (_working_buffer.size() >= _acc_N)
+                {
+                    _freeze = true;
+                    // Do FFT here and estimate
+                    // We have a lot of samples
+                    // After that freeze Frequency Estimator
+
+                    _working_buffer.resize(_acc_N);
+                    _power4(_working_buffer, _working_buffer);
+                    _working_buffer.resize(_FFT_SIZE); // Zero padding
+                    _freeze = true;
+                    std::vector<cf32> spectrum;
+                    spectrum.reserve(_working_buffer.size());
+
+                    _fft.fwd(spectrum, _working_buffer);
+                    //std::rotate(spectrum.begin(), spectrum.begin() + FFT_SIZE / 2, spectrum.end());
+                    _offset_hz = _find_offset(spectrum);
+                    _working_buffer.clear();
+                    _apply_offset(output);
+                }
+
+            }
+        private:
+            // Frequency resolution Fs/N
+            std::vector<cf32> _working_buffer;
+            const std::size_t _acc_N = 16'384;
+            const std::size_t _FFT_SIZE = 4 * _acc_N;
+            double _sampling_frequency;
+            bool _freeze = false;
+            float _offset_hz = 0;
+            float _max_offset = 20'000;
+            Eigen::FFT<float> _fft;
+
+            void _power4(const std::vector<cf32>& input, std::vector<cf32>& output)
+            {
+                output.resize(input.size());
+
+                for (size_t i = 0; i < input.size(); ++i)
+                {
+                    const auto x2 = input[i] * input[i];
+                    output[i] = x2 * x2;
+                }
+            }
+
+            double _max_frequency_range()
+            {
+                // 4 * delta_f < Fs/2
+                // delta_f < Fs/8
+                // Power of 4 multiplies the frequency by 4
+                // We must stay withing Fs/2
+                return _sampling_frequency / 8;
+            }
+
+            double _find_offset(const std::vector<cf32>& spectrum) const
+            {
+                const auto M = static_cast<std::ptrdiff_t>(spectrum.size());
+                const auto k_max = static_cast<std::ptrdiff_t>(
+                    4.0 * _max_offset * static_cast<double>(M) / _sampling_frequency);
+                assert(k_max < M / 2);
+
+                std::ptrdiff_t best_k = 0;
+                float best_power = -1.0f;
+
+                for (std::ptrdiff_t k = -k_max; k <= k_max; ++k)
+                {
+                    const float p = std::norm(spectrum[static_cast<std::size_t>((k + M) % M)]);
+                    if (p > best_power)
+                    {
+                        best_power = p;
+                        best_k = k;
+                    }
+                }
+
+                const double f4 = static_cast<double>(best_k) * _sampling_frequency / static_cast<double>(M);
+                return f4 / 4.0;
+            }
+
+            void _apply_offset(std::vector<cf32>& output)
+            {
+                const double step = -2.0 * PI * _offset_hz / _sampling_frequency;   // rad/vzorka
+                double _phase = 0;
+                for (auto& x : output)
+                {
+                    x *= cf32(static_cast<float>(std::cos(_phase)), static_cast<float>(std::sin(_phase)));
+                    _phase += step;
+                    if (_phase > PI)        _phase -= 2.0 * PI;
+                    else if (_phase < -PI)  _phase += 2.0 * PI;
+                }
+            }
+    };
 
     // Implementation from https://wiki.gnuradio.org/index.php/AGC
     class AGC
@@ -385,13 +496,13 @@ namespace Modem
 
         void _wrap_phase()
         {
-            while (_phase >= 2*std::numbers::pi)
+            while (_phase >= 2*std::numbers::pi_v<float>)
             {
-                _phase -= 2*std::numbers::pi;
+                _phase -= 2*std::numbers::pi_v<float>;
             }
                 while (_phase < 0)
             {
-                _phase += 2*std::numbers::pi;
+                _phase += 2*std::numbers::pi_v<float>;
             }
         }
     };
@@ -459,104 +570,185 @@ namespace Modem
     class FrameSynchronizer
     {
         public:
-            FrameSynchronizer() = default;
-            void process(const std::vector<uint8_t> &input, std::vector<Packet> &output)
+            using RotationTable = std::array<std::array<uint8_t, 16>, 4>;
+
+            static constexpr uint32_t sync_word = 0x1ACFFC1D;
+            static constexpr std::size_t max_length = 1800;
+
+            static constexpr RotationTable FORWARD = []
             {
-                uint32_t shift_register = 0;
-                output.clear();
-                for (std::size_t i = 0; i < input.size(); i++)
+                auto bits_to_level = [](uint8_t b) -> int
                 {
-                    shift_register = (shift_register << 4) | (input[i] & 0x0F);
-                    if (_sync_word == shift_register)
+                    switch (b & 0x3)
                     {
-                        std::size_t sync_start = i - 7;
-                        auto packet = _create_packet(input, sync_start);
-                        if (packet.length != 0)
-                        {
-                            output.push_back(packet);
-                        }
+                        case 0b00: return -3;
+                        case 0b01: return -1;
+                        case 0b10: return +3;
+                        default:   return +1;
+                    }
+                };
+                auto level_to_bits = [](int level) -> uint8_t
+                {
+                    switch (level)
+                    {
+                        case -3: return 0b00;
+                        case -1: return 0b01;
+                        case +3: return 0b10;
+                        default: return 0b11;
+                    }
+                };
+                auto rotate90 = [&](uint8_t n) -> uint8_t
+                {
+                    const int i = bits_to_level(static_cast<uint8_t>(n >> 2));
+                    const int q = bits_to_level(n);
+                    return static_cast<uint8_t>((level_to_bits(-q) << 2) | level_to_bits(i));
+                };
+
+                RotationTable table{};
+                for (uint8_t n = 0; n < 16; ++n)
+                {
+                    uint8_t r = n;
+                    for (std::size_t k = 0; k < 4; ++k)
+                    {
+                        table[k][n] = r;
+                        r = rotate90(r);
                     }
                 }
+                return table;
+            }();
+
+            static constexpr RotationTable INVERSE = []
+            {
+                RotationTable table{};
+                for (std::size_t k = 0; k < 4; ++k)
+                    for (uint8_t n = 0; n < 16; ++n)
+                        table[k][FORWARD[k][n]] = n;
+                return table;
+            }();
+
+            static constexpr std::array<uint32_t, 4> SYNC_ROT = []
+            {
+                std::array<uint32_t, 4> table{};
+                for (std::size_t k = 0; k < 4; ++k)
+                {
+                    uint32_t word = 0;
+                    for (int shift = 28; shift >= 0; shift -= 4)
+                        word = (word << 4) | FORWARD[k][(sync_word >> shift) & 0xF];
+                    table[k] = word;
+                }
+                return table;
+            }();
+
+            void process(const std::vector<uint8_t> &input, std::vector<Packet> &output)
+            {
+                output.clear();
+                _buffer.insert(_buffer.end(), input.begin(), input.end());
+
+                std::size_t pos = 0;
+
+                while (pos + SYNC_NIBBLES <= _buffer.size())
+                {
+                    const int k = _match_sync(pos);
+                    if (k < 0)
+                    {
+                        ++pos;
+                        continue;
+                    }
+
+                    if (pos + HEADER_NIBBLES > _buffer.size())
+                        break;
+
+                    const uint16_t length = _read_u16(pos + SYNC_NIBBLES, k);
+                    if (length == 0 || length > max_length)
+                    {
+                        ++pos;
+                        continue;
+                    }
+
+                    const std::size_t payload_start = pos + HEADER_NIBBLES;
+                    const std::size_t crc_start = payload_start + 2u * length;
+                    const std::size_t packet_end = crc_start + CRC_NIBBLES;
+
+                    if (packet_end > _buffer.size())
+                        break;
+
+                    Packet packet;
+                    packet.sync_word = sync_word;
+                    packet.length = length;
+                    packet.data.resize(length);
+                    for (std::size_t j = 0; j < length; ++j)
+                        packet.data[j] = _read_u8(payload_start + 2 * j, k);
+                    packet.crc = _read_u16(crc_start, k);
+
+                    if (packet.crc == _crc16(packet.data.data(), length))
+                    {
+                        _rotation = k;
+                        ++_packets_ok;
+                        output.push_back(std::move(packet));
+                        pos = packet_end;
+                    }
+                    else
+                    {
+                        ++_crc_errors;
+                        ++pos;
+                    }
+                }
+
+                _buffer.erase(_buffer.begin(), _buffer.begin() + static_cast<std::ptrdiff_t>(pos));
             }
+
+            void reset()
+            {
+                _buffer.clear();
+                _rotation = -1;
+                _packets_ok = 0;
+                _crc_errors = 0;
+            }
+
+            int rotation() const { return _rotation; }
+            std::size_t packets_ok() const { return _packets_ok; }
+            std::size_t crc_errors() const { return _crc_errors; }
+
         private:
-            uint32_t _sync_word = 0x1ACFFC1D;
+            static constexpr std::size_t SYNC_NIBBLES = 8;
+            static constexpr std::size_t HEADER_NIBBLES = SYNC_NIBBLES + 4;
+            static constexpr std::size_t CRC_NIBBLES = 4;
 
-            uint8_t _bits_to_uint8_t(const std::vector<uint8_t>& input, std::size_t i)
+            std::vector<uint8_t> _buffer;
+            int _rotation = -1;
+            std::size_t _packets_ok = 0;
+            std::size_t _crc_errors = 0;
+
+            int _match_sync(std::size_t pos) const
             {
-                return static_cast<uint8_t>(
-                    (input[i] << 4) |
-                    (input[i + 1] & 0x0F)
-                );
+                uint32_t word = 0;
+                for (std::size_t i = 0; i < SYNC_NIBBLES; ++i)
+                    word = (word << 4) | (_buffer[pos + i] & 0x0F);
+
+                for (int k = 0; k < 4; ++k)
+                    if (word == SYNC_ROT[k])
+                        return k;
+                return -1;
             }
 
-            uint16_t _bits_to_uint16_t(const std::vector<uint8_t>& input, std::size_t i)
+            uint8_t _read_u8(std::size_t pos, int k) const
             {
-                uint16_t high = _bits_to_uint8_t(input, i);
-                uint16_t low  = _bits_to_uint8_t(input, i + 2);
-
-                return static_cast<uint16_t>((high << 8) | low);
+                const auto &inv = INVERSE[k];
+                return static_cast<uint8_t>((inv[_buffer[pos] & 0x0F] << 4) |
+                                             inv[_buffer[pos + 1] & 0x0F]);
             }
 
-            Packet _create_packet(const std::vector<uint8_t>& input, std::size_t index)
+            uint16_t _read_u16(std::size_t pos, int k) const
             {
-                Packet p{};
-
-                if (index + 12 > input.size())
-                {
-                    p.length = 0;
-                    return p;
-                }
-
-                p.sync_word = _sync_word;
-                p.length = _bits_to_uint16_t(input, index + 8);
-                if (p.length > 1800)
-                {
-                    p.length = 0;
-                    return p;
-                }
-
-                const std::size_t payload_start = index + 12;
-                const std::size_t payload_end = payload_start + p.length * 2;
-                const std::size_t crc_start = payload_end;
-                const std::size_t packet_end = crc_start + 4;
-
-                if (packet_end > input.size())
-                {
-                    p.length = 0;
-                    return p;
-                }
-
-                p.data.reserve(p.length);
-
-                for (std::size_t j = 0; j < p.length; ++j)
-                {
-                    p.data.push_back(_bits_to_uint8_t(input, payload_start + j * 2));
-                }
-
-                p.crc = _bits_to_uint16_t(input, crc_start);
-                uint16_t crc = _crc16(p.data.data(), p.length);
-                if (p.crc != crc)
-                {
-                    p.length = 0;
-                    return p;
-                }
-
-                return p;
+                return static_cast<uint16_t>((_read_u8(pos, k) << 8) | _read_u8(pos + 2, k));
             }
 
-            // Source - https://stackoverflow.com/a/44947877
-            // Posted by sarvankumar_t, modified by community. See post 'Timeline' for change history
-            // Retrieved 2026-10-06, License - CC BY-SA 4.0
-            // Modified by me
-
-            uint16_t _crc16(const unsigned char* data, size_t length)
+            static uint16_t _crc16(const uint8_t *data, std::size_t length)
             {
                 uint16_t crc = 0xFFFF;
-
                 while (length--)
                 {
                     crc ^= static_cast<uint16_t>(*data++) << 8;
-
                     for (int i = 0; i < 8; ++i)
                     {
                         if (crc & 0x8000)
@@ -565,12 +757,12 @@ namespace Modem
                             crc = static_cast<uint16_t>(crc << 1);
                     }
                 }
-
                 return crc;
             }
-
     };
 }
+
+
 
 
 std::vector<Modem::cf32> read_iq_samples()
@@ -620,19 +812,12 @@ inline bool write_iq_file(const std::string& path,
 }
 
 
-void write_video(
-    const std::vector<Modem::Packet>& packets,
-    const std::string& filename)
+void write_video(const std::vector<Modem::Packet>& packets, std::ostream& out)
 {
-    std::ofstream file(
-        filename,
-        std::ios::binary | std::ios::trunc);
-
-    for (const auto& packet : packets)
-    {
-        file.write(
-            reinterpret_cast<const char*>(packet.data.data()),
-            packet.data.size());
+    for (const auto& packet : packets) {
+        out.write(reinterpret_cast<const char*>(packet.data.data()),
+                  packet.data.size());
+        out.flush();
     }
 }
 
@@ -650,6 +835,11 @@ void write_video_to_stdout(const std::vector<Modem::Packet>& packets)
 
 int main()
 {
+   zmq::context_t ctx;
+   zmq::socket_t sock(ctx, zmq::socket_type::pull);
+   sock.connect("tcp://127.0.0.1:5555");
+   std::ofstream video("capture.ts", std::ios::binary | std::ios::trunc);
+
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
     Modem::DDPLL pll_loop(0.015f, 1.0f);
@@ -659,7 +849,7 @@ int main()
     Modem::BitSlicer slicer;
     Modem::FrameSynchronizer frame_synchronizer;
 
-    std::vector<Modem::cf32> iq_data(4096);
+    std::vector<Modem::cf32> iq_data(4096*5);
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
     std::vector<Modem::cf32> agc_data;
@@ -670,17 +860,33 @@ int main()
     std::vector<Modem::Packet> packets;
 
 
-    low_pass_filter.process(iq_data, filtered_data);
-    rrc_filter.process(filtered_data, matched_filtered_data);
-    agc.process(matched_filtered_data, agc_data);
+    while (true)
+    {
+        zmq::message_t msg;
+        if (!sock.recv(msg, zmq::recv_flags::none))
+        {
+            continue;
+        }
 
-    timing_loop.process(agc_data, time_synchronized_data);
-    pll_loop.process(time_synchronized_data, phase_synchronized_data);
-    dd_agc.process(phase_synchronized_data, dd_agc_data);
-    slicer.process(dd_agc_data, bits);
-    frame_synchronizer.process(bits, packets);
-    write_video_to_stdout(packets);
-    
+        const auto* samples = static_cast<const Modem::cf32*>(msg.data());
+        const std::size_t n = msg.size() / sizeof(Modem::cf32);
+        if (n == 0)
+        {
+            continue;
+        }
+        iq_data.assign(samples, samples + n);
+        
+        low_pass_filter.process(iq_data, filtered_data);
+        rrc_filter.process(filtered_data, matched_filtered_data);
+        agc.process(matched_filtered_data, agc_data);
 
-
+        timing_loop.process(agc_data, time_synchronized_data);
+        pll_loop.process(time_synchronized_data, phase_synchronized_data);
+        dd_agc.process(phase_synchronized_data, dd_agc_data);
+        slicer.process(dd_agc_data, bits);
+        frame_synchronizer.process(bits, packets);
+        //write_iq_file("symbols.iq", dd_agc_data);
+        //write_video(packets, video);
+        write_video_to_stdout(packets);
+    }
 }

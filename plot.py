@@ -32,7 +32,7 @@ def main():
     p.add_argument("--sps", type=int, default=1)
     p.add_argument("--offset", type=int, default=0)
     p.add_argument("--skip", type=int, default=0)
-    p.add_argument("--max", type=int, default=20000)
+    p.add_argument("--max", type=int, default=20000000)
     p.add_argument("--no-norm", action="store_true")
     p.add_argument("--density", action="store_true")
     a = p.parse_args()

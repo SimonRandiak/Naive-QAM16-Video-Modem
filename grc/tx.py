@@ -7,26 +7,26 @@
 # GNU Radio Python Flow Graph
 # Title: QAM16 video link Transmitter
 # Author: Simon Randiak
-# GNU Radio version: 3.10.12.0
+# GNU Radio version: 3.10.9.2
 
 from PyQt5 import Qt
 from gnuradio import qtgui
 from gnuradio import blocks
+from gnuradio import channels
+from gnuradio.filter import firdes
 from gnuradio import digital
-from gnuradio import gr, pdu
-from gnuradio import network
-from gnuradio.filter import firdes
-import threading
-import tx_epy_block_0 as epy_block_0  # embedded python block
 from gnuradio import gr
-from gnuradio.filter import firdes
 from gnuradio.fft import window
 import sys
 import signal
+from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
-
+from gnuradio import gr, pdu
+from gnuradio import network
+from gnuradio import zeromq
+import tx_epy_block_0 as epy_block_0  # embedded python block
 
 
 
@@ -53,7 +53,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
 
         try:
             geometry = self.settings.value("geometry")
@@ -61,7 +61,6 @@ class tx(gr.top_block, Qt.QWidget):
                 self.restoreGeometry(geometry)
         except BaseException as exc:
             print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
-        self.flowgraph_started = threading.Event()
 
         ##################################################
         # Variables
@@ -78,8 +77,9 @@ class tx(gr.top_block, Qt.QWidget):
         # Blocks
         ##################################################
 
+        self.zeromq_push_sink_0 = zeromq.push_sink(gr.sizeof_gr_complex, 1, 'tcp://127.0.0.1:5555', 100, False, (-1), True)
         self.pdu_pdu_to_tagged_stream_0 = pdu.pdu_to_tagged_stream(gr.types.byte_t, 'packet_len')
-        self.network_socket_pdu_0 = network.socket_pdu('UDP_SERVER', '127.0.0.1', '1234', 10000, False)
+        self.network_socket_pdu_0 = network.socket_pdu('UDP_SERVER', '127.0.0.1', '1234', 40_000, False)
         self.epy_block_0 = epy_block_0.blk()
         self.digital_constellation_modulator_0 = digital.generic_mod(
             constellation=qam,
@@ -90,8 +90,14 @@ class tx(gr.top_block, Qt.QWidget):
             verbose=False,
             log=False,
             truncate=False)
-        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/tmp/iq', True)
-        self.blocks_file_sink_0.set_unbuffered(True)
+        self.channels_channel_model_0 = channels.channel_model(
+            noise_voltage=0.012,
+            frequency_offset=0.0,
+            epsilon=1.00008,
+            taps=[1.0],
+            noise_seed=0,
+            block_tags=False)
+        self.blocks_throttle2_0 = blocks.throttle( gr.sizeof_gr_complex*1, samp_rate, True, 0 if "auto" == "auto" else max( int(float(0.1) * samp_rate) if "auto" == "time" else int(0.1), 1) )
 
 
         ##################################################
@@ -99,12 +105,14 @@ class tx(gr.top_block, Qt.QWidget):
         ##################################################
         self.msg_connect((self.epy_block_0, 'msg_out'), (self.pdu_pdu_to_tagged_stream_0, 'pdus'))
         self.msg_connect((self.network_socket_pdu_0, 'pdus'), (self.epy_block_0, 'msg_in'))
-        self.connect((self.digital_constellation_modulator_0, 0), (self.blocks_file_sink_0, 0))
+        self.connect((self.blocks_throttle2_0, 0), (self.channels_channel_model_0, 0))
+        self.connect((self.channels_channel_model_0, 0), (self.zeromq_push_sink_0, 0))
+        self.connect((self.digital_constellation_modulator_0, 0), (self.blocks_throttle2_0, 0))
         self.connect((self.pdu_pdu_to_tagged_stream_0, 0), (self.digital_constellation_modulator_0, 0))
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -126,6 +134,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.samp_rate = samp_rate
         self.set_rrc_taps(firdes.root_raised_cosine(1.0, self.samp_rate, self.symbol_rate, self.roll_off, (11*self.sps)))
         self.set_sps(int(self.samp_rate/self.symbol_rate))
+        self.blocks_throttle2_0.set_sample_rate(self.samp_rate)
 
     def get_sps(self):
         return self.sps
@@ -163,7 +172,6 @@ def main(top_block_cls=tx, options=None):
     tb = top_block_cls()
 
     tb.start()
-    tb.flowgraph_started.set()
 
     tb.show()
 
