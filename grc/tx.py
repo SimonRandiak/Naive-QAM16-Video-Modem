@@ -7,7 +7,7 @@
 # GNU Radio Python Flow Graph
 # Title: QAM16 video link Transmitter
 # Author: Simon Randiak
-# GNU Radio version: 3.10.9.2
+# GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
 from gnuradio import qtgui
@@ -15,18 +15,20 @@ from gnuradio import blocks
 from gnuradio import channels
 from gnuradio.filter import firdes
 from gnuradio import digital
-from gnuradio import gr
-from gnuradio.fft import window
-import sys
-import signal
-from PyQt5 import Qt
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import eng_notation
 from gnuradio import gr, pdu
 from gnuradio import network
 from gnuradio import zeromq
+import threading
 import tx_epy_block_0 as epy_block_0  # embedded python block
+from gnuradio import gr
+from gnuradio.filter import firdes
+from gnuradio.fft import window
+import sys
+import signal
+from argparse import ArgumentParser
+from gnuradio.eng_arg import eng_float, intx
+from gnuradio import eng_notation
+
 
 
 
@@ -53,7 +55,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("GNU Radio", "tx")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
 
         try:
             geometry = self.settings.value("geometry")
@@ -61,6 +63,7 @@ class tx(gr.top_block, Qt.QWidget):
                 self.restoreGeometry(geometry)
         except BaseException as exc:
             print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
+        self.flowgraph_started = threading.Event()
 
         ##################################################
         # Variables
@@ -92,7 +95,7 @@ class tx(gr.top_block, Qt.QWidget):
             truncate=False)
         self.channels_channel_model_0 = channels.channel_model(
             noise_voltage=0.012,
-            frequency_offset=0.0,
+            frequency_offset=(19_000/samp_rate),
             epsilon=1.00008,
             taps=[1.0],
             noise_seed=0,
@@ -112,7 +115,7 @@ class tx(gr.top_block, Qt.QWidget):
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("GNU Radio", "tx")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -135,6 +138,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.set_rrc_taps(firdes.root_raised_cosine(1.0, self.samp_rate, self.symbol_rate, self.roll_off, (11*self.sps)))
         self.set_sps(int(self.samp_rate/self.symbol_rate))
         self.blocks_throttle2_0.set_sample_rate(self.samp_rate)
+        self.channels_channel_model_0.set_frequency_offset((19_000/self.samp_rate))
 
     def get_sps(self):
         return self.sps
@@ -172,6 +176,7 @@ def main(top_block_cls=tx, options=None):
     tb = top_block_cls()
 
     tb.start()
+    tb.flowgraph_started.set()
 
     tb.show()
 

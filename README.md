@@ -89,3 +89,6 @@ Prvotny AGC gain bol moc velky a teda restreloval
 Gardner TED saturacia
 (Vystup z Claude AI)
 EVM rástlo s pozíciou v súbore. Po desatinách súboru: 2,5 → 3,5 → 4,7 → 5,1 → 5,1 → 9,1 → 11 → 12 %. Signál sa v čase nemenil (výkon bol konštantný, šum tiež), takže chyba musela závisieť od niečoho, čo rastie s časom spracovania. To je podozrivé vždy: absolútny čas, počítadlo, index, akumulátor. Kanál si „nepamätá“, koľko vzoriek už prešlo, kód áno.
+
+Pri velkom packet loss (counter) zresetovat frequency estimator
+Falosny PLL lock sa vyriesil normalizaciou erroru ktora kazdemu odhadu dava rovnaku vahu

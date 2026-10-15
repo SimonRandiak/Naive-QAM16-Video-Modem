@@ -74,7 +74,7 @@ namespace Modem
 
     // Group Delay as lpf_delay = (len(lpf_taps) - 1) // 2
 
-    // Thisawill be based on 4th power frequency estimation
+    // This will be based on 4th power frequency estimation
     class FrequencyEstimator
     {
         public:
@@ -84,13 +84,15 @@ namespace Modem
             }
             void process(const std::vector<cf32> &input, std::vector<cf32> &output)
             {
+
                 output.clear();
+                _apply_offset(input, output);
+
                 if (_freeze == true)
                 {
-                    _apply_offset(output);
                     return;
                 }
-                _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
+
                 if (_working_buffer.size() >= _acc_N)
                 {
                     _freeze = true;
@@ -101,17 +103,25 @@ namespace Modem
                     _working_buffer.resize(_acc_N);
                     _power4(_working_buffer, _working_buffer);
                     _working_buffer.resize(_FFT_SIZE); // Zero padding
-                    _freeze = true;
                     std::vector<cf32> spectrum;
-                    spectrum.reserve(_working_buffer.size());
+                    //spectrum.reserve(_working_buffer.size());
 
                     _fft.fwd(spectrum, _working_buffer);
                     //std::rotate(spectrum.begin(), spectrum.begin() + FFT_SIZE / 2, spectrum.end());
                     _offset_hz = _find_offset(spectrum);
                     _working_buffer.clear();
-                    _apply_offset(output);
+                }
+                else
+                {
+                    _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
                 }
 
+            }
+
+            void reset()
+            {
+                _freeze = false;
+                _working_buffer.clear();
             }
         private:
             // Frequency resolution Fs/N
@@ -121,8 +131,9 @@ namespace Modem
             double _sampling_frequency;
             bool _freeze = false;
             float _offset_hz = 0;
-            float _max_offset = 20'000;
+            float _max_offset = 50'000;
             Eigen::FFT<float> _fft;
+            double _phase = 0;
 
             void _power4(const std::vector<cf32>& input, std::vector<cf32>& output)
             {
@@ -147,15 +158,14 @@ namespace Modem
             double _find_offset(const std::vector<cf32>& spectrum) const
             {
                 const auto M = static_cast<std::ptrdiff_t>(spectrum.size());
-                const auto k_max = static_cast<std::ptrdiff_t>(
-                    4.0 * _max_offset * static_cast<double>(M) / _sampling_frequency);
-                assert(k_max < M / 2);
+                const auto k_bin = static_cast<std::ptrdiff_t>(4.0 * _max_offset * static_cast<double>(M) / _sampling_frequency);
 
                 std::ptrdiff_t best_k = 0;
                 float best_power = -1.0f;
-
-                for (std::ptrdiff_t k = -k_max; k <= k_max; ++k)
+                // - means negative frequency so we cover negative and positive frequency offset
+                for (std::ptrdiff_t k = -k_bin; k <= k_bin; ++k)
                 {
+                    // we use property that DFT is periodic -k/N = (N-k)/N
                     const float p = std::norm(spectrum[static_cast<std::size_t>((k + M) % M)]);
                     if (p > best_power)
                     {
@@ -168,18 +178,31 @@ namespace Modem
                 return f4 / 4.0;
             }
 
-            void _apply_offset(std::vector<cf32>& output)
+            void _apply_offset(const std::vector<cf32>& input, std::vector<cf32>& output)
             {
-                const double step = -2.0 * PI * _offset_hz / _sampling_frequency;   // rad/vzorka
-                double _phase = 0;
-                for (auto& x : output)
+                const double step = -2.0 * std::numbers::pi_v<float> * _offset_hz / _sampling_frequency;
+                for (std::size_t i = 0; i < input.size(); i++)
                 {
-                    x *= cf32(static_cast<float>(std::cos(_phase)), static_cast<float>(std::sin(_phase)));
+                    cf32 sample = input[i];
+                    sample *= cf32(static_cast<float>(std::cos(_phase)), static_cast<float>(std::sin(_phase)));
                     _phase += step;
-                    if (_phase > PI)        _phase -= 2.0 * PI;
-                    else if (_phase < -PI)  _phase += 2.0 * PI;
+                    output.push_back(sample);
+                    _wrap_phase();
                 }
             }
+
+            void _wrap_phase()
+            {
+                while (_phase >= 2*std::numbers::pi_v<float>)
+                {
+                    _phase -= 2*std::numbers::pi_v<float>;
+                }
+                    while (_phase < 0)
+                {
+                    _phase += 2*std::numbers::pi_v<float>;
+                }
+            }
+
     };
 
     // Implementation from https://wiki.gnuradio.org/index.php/AGC
@@ -188,11 +211,12 @@ namespace Modem
         public:
             AGC(float reference, float gain, float rate, float min_gain, float max_gain)
             {
-                _max_gain = max_gain;
-                _min_gain = min_gain;
+                _max_log_gain = std::log(max_gain);
+                _min_log_gain = std::log(min_gain);
                 _rate = rate;
-                _reference = reference;
-                _gain = gain;
+                _log_reference = std::log(reference);
+                _log_gain = std::log(gain);
+                _epsilon = (reference * reference)*1e-10;
             }
 
             void process(const std::vector<cf32> &input, std::vector<cf32> &output)
@@ -201,21 +225,22 @@ namespace Modem
                 output.reserve(input.size());
                 for (std::size_t i = 0; i < input.size(); i++)
                 {
-                    cf32 sample = input[i] * _gain;
+                    cf32 sample = input[i] * std::exp(_log_gain);
                     output.push_back(sample);
-                    float amplitude = std::abs(sample);
-                    float difference = _reference - amplitude;
+                    float log_amplitude = 0.5f*std::log(std::norm(sample) + _epsilon);
+                    float difference = _log_reference - log_amplitude;
                     float result = difference * _rate;
-                    _gain += result;
-                    _gain = std::clamp(_gain, _min_gain, _max_gain);
+                    _log_gain += result;
+                    _log_gain = std::clamp(_log_gain, _min_log_gain, _max_log_gain);
                 }
             }
         private:
-            float _max_gain;
-            float _min_gain;
+            float _max_log_gain;
+            float _min_log_gain;
             float _rate;
-            float _reference;
-            float _gain;
+            float _log_reference;
+            float _log_gain;
+            float _epsilon;
     };
 
     // Implementation from https://doi.org/10.1109/TCOM.1975.1092840
@@ -441,7 +466,7 @@ namespace Modem
                 output.push_back(derotated);
 
                 cf32 nearest_point = _find_nearest(derotated);
-                float error = _cross_product(derotated, nearest_point);
+                float error = _cross_product_normalized(derotated, nearest_point);
 
                 _integral += (_coeffs.K_I * error);
 
@@ -492,6 +517,12 @@ namespace Modem
         float _cross_product(const cf32 &a, const cf32 &b)
         {
             return (b.real() * a.imag()) - (b.imag() * a.real());
+        }
+
+        float _cross_product_normalized(const cf32 &a, const cf32 &b)
+        {
+            float d = std::norm(b);
+            return ((b.real() * a.imag()) - (b.imag() * a.real())) / d;
         }
 
         void _wrap_phase()
@@ -705,6 +736,11 @@ namespace Modem
                 _crc_errors = 0;
             }
 
+            void reset_crc_errors()
+            {
+                _crc_errors = 0;
+            }
+
             int rotation() const { return _rotation; }
             std::size_t packets_ok() const { return _packets_ok; }
             std::size_t crc_errors() const { return _crc_errors; }
@@ -835,21 +871,25 @@ void write_video_to_stdout(const std::vector<Modem::Packet>& packets)
 
 int main()
 {
-   zmq::context_t ctx;
-   zmq::socket_t sock(ctx, zmq::socket_type::pull);
-   sock.connect("tcp://127.0.0.1:5555");
-   std::ofstream video("capture.ts", std::ios::binary | std::ios::trunc);
 
+    static constexpr float sampling_frequency = 2'400'000;
+    zmq::context_t ctx;
+    zmq::socket_t sock(ctx, zmq::socket_type::pull);
+    sock.connect("tcp://127.0.0.1:5555");
+    std::ofstream video("capture.ts", std::ios::binary | std::ios::trunc);
+
+    Modem::FrequencyEstimator coarse_estimator(sampling_frequency);
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
     Modem::DDPLL pll_loop(0.015f, 1.0f);
     Modem::GardnerTED timing_loop(0.005, 8);
-    Modem::AGC agc(0.93f, 0.4, 1.15e-5f, 1e-4f, 1e4f);
+    Modem::AGC agc(0.8f, 0.4, 1.15e-5f, 1e-4f, 1e4f);
     Modem::DDAGC dd_agc(1, 0.016, 0.5, 2);
     Modem::BitSlicer slicer;
     Modem::FrameSynchronizer frame_synchronizer;
 
     std::vector<Modem::cf32> iq_data(4096*5);
+    std::vector<Modem::cf32> coarse_frequency_data;
     std::vector<Modem::cf32> filtered_data;
     std::vector<Modem::cf32> matched_filtered_data;
     std::vector<Modem::cf32> agc_data;
@@ -875,9 +915,11 @@ int main()
             continue;
         }
         iq_data.assign(samples, samples + n);
+
         
         low_pass_filter.process(iq_data, filtered_data);
-        rrc_filter.process(filtered_data, matched_filtered_data);
+        coarse_estimator.process(filtered_data, coarse_frequency_data);
+        rrc_filter.process(coarse_frequency_data, matched_filtered_data);
         agc.process(matched_filtered_data, agc_data);
 
         timing_loop.process(agc_data, time_synchronized_data);
@@ -885,6 +927,11 @@ int main()
         dd_agc.process(phase_synchronized_data, dd_agc_data);
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
+        if (frame_synchronizer.crc_errors() > 20)
+        {
+            coarse_estimator.reset();
+            frame_synchronizer.reset_crc_errors();
+        }
         //write_iq_file("symbols.iq", dd_agc_data);
         //write_video(packets, video);
         write_video_to_stdout(packets);
