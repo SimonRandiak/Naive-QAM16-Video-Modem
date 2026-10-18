@@ -74,6 +74,7 @@ namespace Modem
 
     // Group Delay as lpf_delay = (len(lpf_taps) - 1) // 2
 
+
     // This will be based on 4th power frequency estimation
     class FrequencyEstimator
     {
@@ -267,16 +268,34 @@ namespace Modem
 
                     float error_i = std::abs(nearest.real()) - std::abs(sample.real());
                     float error_q = std::abs(nearest.imag()) - std::abs(sample.imag());
-
+                    if (_freeze == true)
+                    {
+                        continue;
+                    }
                     _gain += _rate * (error_i + error_q);
                     _gain = std::clamp(_gain, _min_gain, _max_gain);
                 }
+            }
+
+            void reset()
+            {
+                _gain = 1;
+            }
+
+            void freeze()
+            {
+                _freeze = true;
+            }
+            void unfreeze()
+            {
+                _freeze = false;
             }
         private:
             float _max_gain;
             float _min_gain;
             float _rate;
             float _gain = 1;
+            bool _freeze = false;
 
             static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
@@ -421,6 +440,12 @@ namespace Modem
             _t_prev -= static_cast<float>(drop);
         }
 
+        void setBnTs(float BnTs, float kD = 1.0f)
+        {
+            _coeffs.K_D = kD;
+            _coeffs.calculate(BnTs);
+        }
+
         void reset()
         {
             _v = 0.0f;
@@ -432,10 +457,10 @@ namespace Modem
         }
 
     private:
-        cf32 interp(float t) const
+        cf32 interp(double t) const
         {
             const size_t i = static_cast<size_t>(t);
-            return Modem::lerp(_working_buffer[i], _working_buffer[i + 1], t - static_cast<float>(i));
+            return Modem::lerp(_working_buffer[i], _working_buffer[i + 1], t - static_cast<double>(i));
         }
 
         PLLCoefficients _coeffs;
@@ -467,13 +492,19 @@ namespace Modem
 
                 cf32 nearest_point = _find_nearest(derotated);
                 float error = _cross_product_normalized(derotated, nearest_point);
-
+                // PLL related
                 _integral += (_coeffs.K_I * error);
 
                 _phase += _integral + (_coeffs.K_P * error);
                 _wrap_phase();
 
             }
+        }
+
+        void setBnTs(float BnTs, float kD = 1.0f)
+        {
+            _coeffs.K_D = kD;
+            _coeffs.calculate(BnTs);
         }
 
         void reset()
@@ -536,6 +567,166 @@ namespace Modem
                 _phase += 2*std::numbers::pi_v<float>;
             }
         }
+    };
+
+    class SyncStateMachine
+    {
+        public:
+            enum class State
+            {
+                UNLOCKED,
+                TRANSITION,
+                LOCKED
+            };
+        
+            void process(const std::vector<cf32> &input)
+            {
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    cf32 current = input[i];
+
+                    cf32 nearest_point = _find_nearest(current);
+                    _evm_error += std::norm(current - nearest_point);
+                    _evm_power += std::norm(nearest_point);
+                    _evm_count += 1;
+                    if (_evm_count == _evm_N)
+                    {
+                        _evm_percentage = 100 * std::sqrt(_evm_error / _evm_power);
+                        _mer_db = 10 * std::log10(_evm_power / _evm_error);
+                        _evm_error = 0.0f;
+                        _evm_power = 0.0f;
+                        _evm_count = 0;
+
+                        if (_state == State::UNLOCKED)
+                        {
+                            _unlock_mer += _mer_db;
+                            _unlock_count += 1;
+
+                            if (_unlock_count == _unlock_N)
+                            {
+                                float average_unlock_mer = (_unlock_mer / _unlock_count);
+                                if (average_unlock_mer >= _T_lock)
+                                {
+                                    _state = State::TRANSITION;
+                                    _previous_state = State::UNLOCKED;
+                                }
+                                _unlock_count = 0;
+                                _unlock_mer = 0;
+                            }
+                        }
+                        else if (_state == State::LOCKED)
+                        {
+                            _lock_mer += _mer_db;
+                            _lock_count += 1;
+
+                            if (_lock_count == _lock_N)
+                            {
+                                float average_unlock_mer = (_lock_mer / _lock_count);
+                                if (average_unlock_mer <= _T_unlock)
+                                {
+                                    _state = State::TRANSITION;
+                                    _previous_state = State::LOCKED;
+                                }
+                                _lock_count = 0;
+                                _lock_mer = 0;
+                            }
+                        }
+                        else if (_state == State::TRANSITION)
+                        {
+                            if (_transition_count == _transition_N)
+                            {
+                                _update_loops = true;
+                                _transition_count = 0;
+                                if (_previous_state == State::UNLOCKED)
+                                {
+                                    _state = State::LOCKED;
+                                    _previous_state = State::LOCKED;
+                                }
+                                else if (_previous_state == State::LOCKED)
+                                {
+                                    _state = State::UNLOCKED;
+                                    _previous_state = State::UNLOCKED;
+                                }
+                            }
+                            _transition_count += 1;
+                        }
+
+                        std::cerr << "[MER dB] " << _mer_db << std::endl;
+                        std::cerr << "[EVM Percentage] " << _evm_percentage << std::endl;
+                    }
+                }
+            }
+
+            bool update()
+            {
+                if (_update_loops == true)
+                {
+                    _update_loops = false;
+                    return true;
+                }
+                return false;
+            }
+
+            State current_state()
+            {
+                return _state;
+            }
+
+        private:
+            static constexpr float _T_lock = 15.5;
+            static constexpr float _T_unlock = 13.5;
+
+            bool _update_loops = false;
+
+
+            State _state = State::UNLOCKED;
+            State _previous_state = State::UNLOCKED;
+            const int _evm_N = 3000;
+
+            const int _unlock_N = 4;
+            const int _lock_N = 4;
+            const int _transition_N = 6;
+
+            int _lock_count = 0;
+            int _unlock_count = 0;
+
+            int _transition_count = 0;
+
+            float _lock_mer = 0;
+            float _unlock_mer = 0;
+
+            float _evm_error = 0;
+            float _evm_power = 0;
+
+            int _evm_count = 0;
+
+            float _evm_percentage = 0;
+            float _mer_db = 0;
+            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
+
+            static constexpr std::array<cf32, 16> _points = {{
+                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
+                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
+                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
+                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
+            }};
+
+            cf32 _find_nearest(const cf32 &a)
+            {
+                cf32 closest{0.0f, 0.0f};
+                float minimal_distance = std::numeric_limits<float>::max();
+                for (std::size_t i = 0; i < _points.size(); i++)
+                {
+                    cf32 point = _points[i];
+                    float distance = std::abs(a - point);
+                    if (distance < minimal_distance)
+                    {
+                        minimal_distance = distance;
+                        closest = point;
+                    }
+                }
+                return closest;
+            }
     };
 
     class BitSlicer
@@ -876,12 +1067,13 @@ int main()
     zmq::context_t ctx;
     zmq::socket_t sock(ctx, zmq::socket_type::pull);
     sock.connect("tcp://127.0.0.1:5555");
-    std::ofstream video("capture.ts", std::ios::binary | std::ios::trunc);
+    std::cerr << "[START] src=zmq://127.0.0.1:5555  fs=2400000  rs=300000  sps=8" << std::endl;
 
+    Modem::SyncStateMachine state_machine;
     Modem::FrequencyEstimator coarse_estimator(sampling_frequency);
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
-    Modem::DDPLL pll_loop(0.015f, 1.0f);
+    Modem::DDPLL pll_loop(0.06f, 1.0f); // kD needs callibration
     Modem::GardnerTED timing_loop(0.005, 8);
     Modem::AGC agc(0.8f, 0.4, 1.15e-5f, 1e-4f, 1e4f);
     Modem::DDAGC dd_agc(1, 0.016, 0.5, 2);
@@ -899,6 +1091,8 @@ int main()
     std::vector<uint8_t> bits;
     std::vector<Modem::Packet> packets;
 
+
+    dd_agc.freeze();
 
     while (true)
     {
@@ -925,6 +1119,26 @@ int main()
         timing_loop.process(agc_data, time_synchronized_data);
         pll_loop.process(time_synchronized_data, phase_synchronized_data);
         dd_agc.process(phase_synchronized_data, dd_agc_data);
+
+        state_machine.process(dd_agc_data);
+
+        if (state_machine.update())
+        {
+            if (state_machine.current_state() == Modem::state_machine::State::LOCKED)
+            {
+                dd_agc.unfreeze();
+                pll_loop.setBnTs(0.015);
+            }
+            else if (state_machine.current_state() == Modem::state_machine::State::UNLOCKED)
+            {
+                dd_agc.reset();
+                dd_agc.freeze();
+                pll_loop.setBnTs(0.060);
+                coarse_estimator.reset();
+                pll_loop.reset();
+            }
+        }
+
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
         if (frame_synchronizer.crc_errors() > 20)
