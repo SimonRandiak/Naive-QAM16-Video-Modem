@@ -96,7 +96,6 @@ namespace Modem
 
                 if (_working_buffer.size() >= _acc_N)
                 {
-                    _freeze = true;
                     // Do FFT here and estimate
                     // We have a lot of samples
                     // After that freeze Frequency Estimator
@@ -109,7 +108,11 @@ namespace Modem
 
                     _fft.fwd(spectrum, _working_buffer);
                     //std::rotate(spectrum.begin(), spectrum.begin() + FFT_SIZE / 2, spectrum.end());
-                    _offset_hz = _find_offset(spectrum);
+                    if (_peak_to_mean(spectrum) > 15)
+                    {
+                        _freeze = true;
+                        _offset_hz = _find_offset(spectrum);
+                    }
                     _working_buffer.clear();
                 }
                 else
@@ -190,6 +193,27 @@ namespace Modem
                     output.push_back(sample);
                     _wrap_phase();
                 }
+            }
+
+            double _peak_to_mean(const std::vector<cf32>& input)
+            {
+                float best_power = -1.0f;
+                const auto M = static_cast<std::ptrdiff_t>(input.size());
+                const auto k_bin = static_cast<std::ptrdiff_t>(4.0 * _max_offset * static_cast<double>(M) / _sampling_frequency);
+                double integrator = 0;
+                // - means negative frequency so we cover negative and positive frequency offset
+                for (std::ptrdiff_t k = -k_bin; k <= k_bin; ++k)
+                {
+                    // we use property that DFT is periodic -k/N = (N-k)/N
+                    const float p = std::norm(input[static_cast<std::size_t>((k + M) % M)]);
+                    integrator += p;
+                    if (p > best_power)
+                    {
+                        best_power = p;
+                    }
+                }
+
+                return 10 * std::log10(best_power / (integrator / ((2 * k_bin) + 1) ));
             }
 
             void _wrap_phase()
@@ -1124,12 +1148,12 @@ int main()
 
         if (state_machine.update())
         {
-            if (state_machine.current_state() == Modem::state_machine::State::LOCKED)
+            if (state_machine.current_state() == Modem::SyncStateMachine::State::LOCKED)
             {
                 dd_agc.unfreeze();
                 pll_loop.setBnTs(0.015);
             }
-            else if (state_machine.current_state() == Modem::state_machine::State::UNLOCKED)
+            else if (state_machine.current_state() == Modem::SyncStateMachine::State::UNLOCKED)
             {
                 dd_agc.reset();
                 dd_agc.freeze();
