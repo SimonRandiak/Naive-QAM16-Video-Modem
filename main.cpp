@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <numbers>
 #include <fstream>
+#include <chrono>
 
 #include <zmq.hpp>
 #include <unsupported/Eigen/FFT>
@@ -624,8 +625,6 @@ namespace Modem
                         if (_state == State::UNLOCKED)
                         {
                             _unlock_mer += _mer_db;
-                            _unlock_count += 1;
-
                             if (_unlock_count == _unlock_N)
                             {
                                 float average_unlock_mer = (_unlock_mer / _unlock_count);
@@ -637,16 +636,26 @@ namespace Modem
                                 _unlock_count = 0;
                                 _unlock_mer = 0;
                             }
+                            if (_state != State::TRANSITION)
+                            {
+                                auto elapsed = std::chrono::steady_clock::now() - _in_unlock_time;
+                                if (elapsed >= std::chrono::milliseconds(2000))
+                                {
+                                    _in_unlock_time = std::chrono::steady_clock::now();
+                                    _update_loops = true;
+                                }
+                            }
+
+                            _unlock_count += 1;
                         }
                         else if (_state == State::LOCKED)
                         {
                             _lock_mer += _mer_db;
-                            _lock_count += 1;
 
                             if (_lock_count == _lock_N)
                             {
-                                float average_unlock_mer = (_lock_mer / _lock_count);
-                                if (average_unlock_mer <= _T_unlock)
+                                float average_lock_mer = (_lock_mer / _lock_count);
+                                if (average_lock_mer <= _T_unlock)
                                 {
                                     _state = State::TRANSITION;
                                     _previous_state = State::LOCKED;
@@ -654,6 +663,8 @@ namespace Modem
                                 _lock_count = 0;
                                 _lock_mer = 0;
                             }
+
+                            _lock_count += 1;
                         }
                         else if (_state == State::TRANSITION)
                         {
@@ -668,6 +679,7 @@ namespace Modem
                                 }
                                 else if (_previous_state == State::LOCKED)
                                 {
+                                    _in_unlock_time = std::chrono::steady_clock::now();
                                     _state = State::UNLOCKED;
                                     _previous_state = State::UNLOCKED;
                                 }
@@ -702,7 +714,7 @@ namespace Modem
 
             bool _update_loops = false;
 
-
+           std::chrono::steady_clock::time_point _in_unlock_time = std::chrono::steady_clock::now();
             State _state = State::UNLOCKED;
             State _previous_state = State::UNLOCKED;
             const int _evm_N = 3000;
@@ -711,8 +723,8 @@ namespace Modem
             const int _lock_N = 4;
             const int _transition_N = 6;
 
-            int _lock_count = 0;
-            int _unlock_count = 0;
+            int _lock_count = 1;
+            int _unlock_count = 1;
 
             int _transition_count = 0;
 
@@ -1160,16 +1172,13 @@ int main()
                 pll_loop.setBnTs(0.060);
                 coarse_estimator.reset();
                 pll_loop.reset();
+                timing_loop.reset();
             }
         }
 
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
-        if (frame_synchronizer.crc_errors() > 20)
-        {
-            coarse_estimator.reset();
-            frame_synchronizer.reset_crc_errors();
-        }
+
         //write_iq_file("symbols.iq", dd_agc_data);
         //write_video(packets, video);
         write_video_to_stdout(packets);
