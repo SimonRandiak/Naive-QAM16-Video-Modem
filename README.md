@@ -92,3 +92,5 @@ EVM rástlo s pozíciou v súbore. Po desatinách súboru: 2,5 → 3,5 → 4,7 �
 
 Pri velkom packet loss (counter) zresetovat frequency estimator
 Falosny PLL lock sa vyriesil normalizaciou erroru ktora kazdemu odhadu dava rovnaku vahu
+
+Ak stream nie je kontinualny tak AGC nema sancu konvergovat na prijimanie signalu
