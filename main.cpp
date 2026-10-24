@@ -520,6 +520,8 @@ namespace Modem
                 // PLL related
                 _integral += (_coeffs.K_I * error);
 
+                _integral = std::clamp(_integral, -_frequency_clamp, _frequency_clamp);
+
                 _phase += _integral + (_coeffs.K_P * error);
                 _wrap_phase();
 
@@ -543,6 +545,8 @@ namespace Modem
         PLLCoefficients _coeffs;
         float _integral = 0; // Frequency
         float _phase = 0;
+        // 215 Hz is doppler frequency with 40 km/h + 5000Hz reserve for drift
+        const float _frequency_clamp = 2*std::numbers::pi_v<float> * ((215.0f+5000.0f) /  300'000.0f);
 
         static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
@@ -630,13 +634,16 @@ namespace Modem
                                 float average_unlock_mer = (_unlock_mer / _unlock_count);
                                 if (average_unlock_mer >= _T_lock)
                                 {
-                                    _state = State::TRANSITION;
+                                    //_state = State::TRANSITION;
                                     _previous_state = State::UNLOCKED;
+                                    _update_loops = true;
+                                    _state = State::LOCKED;
+                                    _in_unlock_time = std::chrono::steady_clock::now();
                                 }
                                 _unlock_count = 0;
                                 _unlock_mer = 0;
                             }
-                            if (_state != State::TRANSITION)
+                            if (true/*_state != State::TRANSITION*/)
                             {
                                 auto elapsed = std::chrono::steady_clock::now() - _in_unlock_time;
                                 if (elapsed >= std::chrono::milliseconds(2000))
@@ -657,8 +664,10 @@ namespace Modem
                                 float average_lock_mer = (_lock_mer / _lock_count);
                                 if (average_lock_mer <= _T_unlock)
                                 {
-                                    _state = State::TRANSITION;
-                                    _previous_state = State::LOCKED;
+                                    //_state = State::TRANSITION;
+                                    _state = State::UNLOCKED;
+                                    _update_loops = true;
+                                    //_previous_state = State::LOCKED;
                                 }
                                 _lock_count = 0;
                                 _lock_mer = 0;
@@ -676,6 +685,7 @@ namespace Modem
                                 {
                                     _state = State::LOCKED;
                                     _previous_state = State::LOCKED;
+                                    _in_unlock_time = std::chrono::steady_clock::now();
                                 }
                                 else if (_previous_state == State::LOCKED)
                                 {
@@ -717,11 +727,11 @@ namespace Modem
            std::chrono::steady_clock::time_point _in_unlock_time = std::chrono::steady_clock::now();
             State _state = State::UNLOCKED;
             State _previous_state = State::UNLOCKED;
-            const int _evm_N = 3000;
+            const int _evm_N = 1500;
 
-            const int _unlock_N = 4;
+            const int _unlock_N = 2;
             const int _lock_N = 4;
-            const int _transition_N = 6;
+            const int _transition_N = 2;
 
             int _lock_count = 1;
             int _unlock_count = 1;
