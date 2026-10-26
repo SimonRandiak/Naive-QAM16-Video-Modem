@@ -650,6 +650,7 @@ namespace Modem
                                 {
                                     _in_unlock_time = std::chrono::steady_clock::now();
                                     _update_loops = true;
+                                    _reset_all = true;
                                 }
                             }
 
@@ -667,6 +668,7 @@ namespace Modem
                                     //_state = State::TRANSITION;
                                     _state = State::UNLOCKED;
                                     _update_loops = true;
+                                    _in_unlock_time = std::chrono::steady_clock::now();
                                     //_previous_state = State::LOCKED;
                                 }
                                 _lock_count = 0;
@@ -713,6 +715,16 @@ namespace Modem
                 return false;
             }
 
+            bool reset_all()
+            {
+                if (_reset_all == true)
+                {
+                    _reset_all = false;
+                    return true;
+                }
+                return false;
+            }
+
             State current_state()
             {
                 return _state;
@@ -723,6 +735,7 @@ namespace Modem
             static constexpr float _T_unlock = 13.5;
 
             bool _update_loops = false;
+            bool _reset_all = false;
 
            std::chrono::steady_clock::time_point _in_unlock_time = std::chrono::steady_clock::now();
             State _state = State::UNLOCKED;
@@ -1185,6 +1198,7 @@ int main()
                 timing_loop.reset();
             }
         }
+
 
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
