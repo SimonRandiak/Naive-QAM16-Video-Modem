@@ -4,7 +4,11 @@ Video packetizer (Embedded Python Block)
 PDU (UDP payload z ffmpeg) na vstupe -> SUVISLY stream bajtov na vystupe.
 Ked nie su ziadne video data, blok posiela pseudonahodne vyplnove bajty
 (nie ramec). Prijimac ich preskoci, lebo v nich nenajde sync word.
-Format ramca je nezmeneny: SYNC(4) | LEN(2) | PAYLOAD | CRC16-CCITT-FALSE(2)
+
+Format ramca:
+    SYNC(4) | [LEN(2) | PAYLOAD | CRC16-CCITT-FALSE(2)] XOR CCSDS PRBS
+CRC sa pocita nad nescramblovanym payloadom. Scrambluje sa vsetko za sync
+slovom od indexu 0 (PRBS perioda 255 B). Sync slovo ostava nescramblovane.
 """
 
 import threading
@@ -16,6 +20,25 @@ import pmt
 import binascii
 
 SYNC_WORD = (0x1ACFFC1D).to_bytes(4, "big")
+
+
+def ccsds_prbs_table():
+    """Ta ista LFSR ako ccsdsLfsr v C++: posun doprava, maska 0xA9, vystup bit 0, MSB first."""
+    state, taps = 0xFF, 0xA9
+    table = np.zeros(255, dtype=np.uint8)
+    for i in range(255):
+        byte = 0
+        for _ in range(8):
+            out = state & 1
+            fb = bin(state & taps).count("1") & 1      # parita = XOR tapov
+            state = (state >> 1) | (fb << 7)
+            byte = (byte << 1) | out
+        table[i] = byte
+    return table
+
+
+PRBS = ccsds_prbs_table()
+assert PRBS[:8].tobytes() == bytes.fromhex("FF480EC09A0D70BC"), "zla PRBS tabulka"
 
 
 class blk(gr.sync_block):
@@ -58,8 +81,12 @@ class blk(gr.sync_block):
         if not data:
             return
 
-        crc = binascii.crc_hqx(data, 0xFFFF)    # CRC-16/CCITT-FALSE
-        frame = SYNC_WORD + len(data).to_bytes(2, "big") + data + crc.to_bytes(2, "big")
+        crc = binascii.crc_hqx(data, 0xFFFF)    # CRC-16/CCITT-FALSE, nad cistymi datami
+
+        # LEN | PAYLOAD | CRC -> scramble od indexu 0 (np.resize = table[i % 255])
+        body = np.frombuffer(len(data).to_bytes(2, "big") + data + crc.to_bytes(2, "big"),
+                             dtype=np.uint8)
+        frame = SYNC_WORD + (body ^ np.resize(PRBS, len(body))).tobytes()
 
         with self._lock:
             # Ochrana pred neobmedzenym rastom latencie: radsej zahodit cely ramec

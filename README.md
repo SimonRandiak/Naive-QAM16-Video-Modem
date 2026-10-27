@@ -100,3 +100,5 @@ Pri 5.8GHz carrier a rychlosti 40km/h vychadza doppler frequency max 215Hz
 AI Generovana sprava
 Falošné zachytenie DD-PLL: QAM16 je symetrická na 90°, takže DD-PLL nerozlíši frekvencie líšiace sa o k·Rs/4 (k·π/2 rad/symbol). Pri neobmedzenom integrátore sa slučka mohla ustáliť na π/2 (75 kHz): MER bolo výborné, ale bity sa každý symbol otočili o ďalší kvadrant a neprešiel žiadny rámec.
 Riešenie: obmedziť integrátor na očakávaný zvyškový ofset po hrubej korekcii. Ten tvorí Doppler (215 Hz pri 40 km/h na 5,8 GHz), drift oscilátorov a chyba hrubého odhadu. Obmedzenie musí byť výrazne pod π/4 rad/symbol (37,5 kHz). Súčasné ±615 Hz (0,0129 rad/symbol) to spĺňa, ale na 5,8 GHz môže byť tesné kvôli driftu. Zvážiť rozšírenie alebo odovzdávanie frekvencie do NCO hrubého odhadu.
+
+Pri float a double konverzii moze vzniknut maly fazovy skok kvoli tomu akok su data ulozene

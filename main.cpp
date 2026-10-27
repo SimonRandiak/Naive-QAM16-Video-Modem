@@ -80,6 +80,12 @@ namespace Modem
     class FrequencyEstimator
     {
         public:
+            enum class State
+            {
+                FREQUENCY_ESTIMATION,
+                TRACKING_SIGNAL,
+            };
+
             FrequencyEstimator(double sampling_frequency)
             {
                 _sampling_frequency = sampling_frequency;
@@ -88,20 +94,58 @@ namespace Modem
             {
 
                 output.clear();
-                _apply_offset(input, output);
 
-                if (_freeze == true)
+                if (_state == State::FREQUENCY_ESTIMATION)
                 {
-                    return;
+                    _estimate_frequency(input);
                 }
 
+                else if (_state == State::TRACKING_SIGNAL)
+                {
+                    _estimate_signal_presence(input);
+                }
+
+                _apply_offset(input, output);
+            }
+
+            bool signal_is_present()
+            {
+                return _signal;
+            }
+
+            void reset()
+            {
+                _state = State::FREQUENCY_ESTIMATION;
+                _signal = false;
+                _working_buffer.clear();
+            }
+        private:
+            State _state = State::FREQUENCY_ESTIMATION;
+            // Frequency resolution Fs/N
+            std::vector<cf32> _working_buffer;
+            const std::size_t _acc_N = 16'384;
+            const std::size_t _FFT_SIZE = 4 * _acc_N;
+            const float _freq_estimation_T = 15;
+            const float _signal_estimation_T = 13;
+            bool _signal = false;
+            double _sampling_frequency;
+            float _offset_hz = 0;
+            float _max_offset = 50'000;
+            Eigen::FFT<float> _fft;
+            double _phase = 0;
+
+
+            void _estimate_frequency(const std::vector<cf32> &input)
+            {
+                // TODO make it so working_buffer is always power of 2
+                _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
                 if (_working_buffer.size() >= _acc_N)
                 {
                     // Do FFT here and estimate
                     // We have a lot of samples
                     // After that freeze Frequency Estimator
 
-                    _working_buffer.resize(_acc_N);
+                    _working_buffer.resize(_round_to_power_to_2(_working_buffer));
                     _power4(_working_buffer, _working_buffer);
                     _working_buffer.resize(_FFT_SIZE); // Zero padding
                     std::vector<cf32> spectrum;
@@ -109,36 +153,48 @@ namespace Modem
 
                     _fft.fwd(spectrum, _working_buffer);
                     //std::rotate(spectrum.begin(), spectrum.begin() + FFT_SIZE / 2, spectrum.end());
-                    if (_peak_to_mean(spectrum) > 15)
+                    if (_peak_to_mean(spectrum) > _freq_estimation_T)
                     {
-                        _freeze = true;
                         _offset_hz = _find_offset(spectrum);
+                        _signal = true;
+                        _state = State::TRACKING_SIGNAL;
                     }
                     _working_buffer.clear();
                 }
-                else
+            }
+
+            void _estimate_signal_presence(const std::vector<cf32> &input)
+            {
+                _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
+                if (_working_buffer.size() >= _acc_N)
                 {
-                    _working_buffer.insert(_working_buffer.end(), input.begin(), input.end());
+                    _working_buffer.resize(_round_to_power_to_2(_working_buffer));
+                    _power4(_working_buffer, _working_buffer);
+                    std::vector<cf32> spectrum;
+
+                    _fft.fwd(spectrum, _working_buffer);
+                    if (_peak_to_mean(spectrum) < _signal_estimation_T)
+                    {
+                        _signal = false;
+                    }
+                    else
+                    {
+                        _signal = true;
+                    }
+                    _working_buffer.clear();
                 }
 
             }
 
-            void reset()
+            std::size_t _round_to_power_to_2(const std::vector<cf32> &input)
             {
-                _freeze = false;
-                _working_buffer.clear();
+                std::size_t n = 1;
+
+                while (n < input.size())
+                    n *= 2;
+
+                return n;
             }
-        private:
-            // Frequency resolution Fs/N
-            std::vector<cf32> _working_buffer;
-            const std::size_t _acc_N = 16'384;
-            const std::size_t _FFT_SIZE = 4 * _acc_N;
-            double _sampling_frequency;
-            bool _freeze = false;
-            float _offset_hz = 0;
-            float _max_offset = 50'000;
-            Eigen::FFT<float> _fft;
-            double _phase = 0;
 
             void _power4(const std::vector<cf32>& input, std::vector<cf32>& output)
             {
@@ -151,7 +207,7 @@ namespace Modem
                 }
             }
 
-            double _max_frequency_range()
+            float _max_frequency_range()
             {
                 // 4 * delta_f < Fs/2
                 // delta_f < Fs/8
@@ -160,7 +216,7 @@ namespace Modem
                 return _sampling_frequency / 8;
             }
 
-            double _find_offset(const std::vector<cf32>& spectrum) const
+            float _find_offset(const std::vector<cf32>& spectrum) const
             {
                 const auto M = static_cast<std::ptrdiff_t>(spectrum.size());
                 const auto k_bin = static_cast<std::ptrdiff_t>(4.0 * _max_offset * static_cast<double>(M) / _sampling_frequency);
@@ -179,7 +235,7 @@ namespace Modem
                     }
                 }
 
-                const double f4 = static_cast<double>(best_k) * _sampling_frequency / static_cast<double>(M);
+                const float f4 = static_cast<double>(best_k) * _sampling_frequency / static_cast<double>(M);
                 return f4 / 4.0;
             }
 
@@ -256,9 +312,23 @@ namespace Modem
                     float log_amplitude = 0.5f*std::log(std::norm(sample) + _epsilon);
                     float difference = _log_reference - log_amplitude;
                     float result = difference * _rate;
+                    if (_freeze == true)
+                    {
+                        continue;
+                    }
                     _log_gain += result;
                     _log_gain = std::clamp(_log_gain, _min_log_gain, _max_log_gain);
                 }
+            }
+
+            void freeze()
+            {
+                _freeze = true;
+            }
+
+            void unfreeze()
+            {
+                _freeze = false;
             }
         private:
             float _max_log_gain;
@@ -267,6 +337,7 @@ namespace Modem
             float _log_reference;
             float _log_gain;
             float _epsilon;
+            bool _freeze = false;
     };
 
     // Implementation from https://doi.org/10.1109/TCOM.1975.1092840
@@ -848,6 +919,79 @@ namespace Modem
         uint16_t crc = 0;
     };
 
+    class ccsdsLfsr
+    {
+        public:
+            uint8_t next_bit()
+            {
+
+                uint8_t out = _state & 1;
+
+                uint8_t new_b = 0;
+
+                for (uint8_t i = 0; i < 8; i++)
+                {
+                    if (_taps & (1 << i))
+                    {
+                        new_b ^= (_state >> i) & 1;
+                    }
+                }
+                _state = (_state >> 1) | (new_b << 7);
+
+                return out;
+            }
+            uint8_t next_byte()
+            {
+                uint8_t byte = 0x00;
+                for (uint8_t i = 0; i < 8; i++)
+                {
+                byte = (byte | next_bit() << (7 - i));
+                }
+
+                return byte;
+            }
+
+            void reset()
+            {
+                _state = 0xFF;
+            }
+        private:
+            uint8_t _state = 0xFF;
+            uint8_t _taps = 0xA9;
+
+    };
+
+    class Scrambler
+    {
+        public:
+            Scrambler()
+            {
+                for (std::size_t i = 0; i < 256; i++)
+                {
+                    _table[i] = _lfsr.next_byte();
+                }
+            }
+
+            uint8_t prbs_byte(std::size_t index)
+            {
+                return _table[index % 255];
+            }
+
+            void scramble(const std::vector<uint8_t> &input, std::vector<uint8_t> &output, std::size_t offset)
+            {
+                output.clear();
+                output.reserve(input.size());
+
+                for (std::size_t i = 0; i < input.size(); i++)
+                {
+                    output.push_back(input[i] ^ _table[(offset + i) % 255]);
+                }
+            }
+        private:
+            ccsdsLfsr _lfsr;
+            std::array<uint8_t, 256> _table;
+    };
+
     class FrameSynchronizer
     {
         public:
@@ -939,7 +1083,7 @@ namespace Modem
                     if (pos + HEADER_NIBBLES > _buffer.size())
                         break;
 
-                    const uint16_t length = _read_u16(pos + SYNC_NIBBLES, k);
+                    const uint16_t length = _read_u16(pos + SYNC_NIBBLES, k, 0);
                     if (length == 0 || length > max_length)
                     {
                         ++pos;
@@ -958,8 +1102,8 @@ namespace Modem
                     packet.length = length;
                     packet.data.resize(length);
                     for (std::size_t j = 0; j < length; ++j)
-                        packet.data[j] = _read_u8(payload_start + 2 * j, k);
-                    packet.crc = _read_u16(crc_start, k);
+                        packet.data[j] = _read_u8(payload_start + 2 * j, k, 2 + j);
+                    packet.crc = _read_u16(crc_start, k, 2 + length);
 
                     if (packet.crc == _crc16(packet.data.data(), length))
                     {
@@ -1000,6 +1144,8 @@ namespace Modem
             static constexpr std::size_t HEADER_NIBBLES = SYNC_NIBBLES + 4;
             static constexpr std::size_t CRC_NIBBLES = 4;
 
+            Scrambler _scrambler;
+
             std::vector<uint8_t> _buffer;
             int _rotation = -1;
             std::size_t _packets_ok = 0;
@@ -1017,16 +1163,17 @@ namespace Modem
                 return -1;
             }
 
-            uint8_t _read_u8(std::size_t pos, int k) const
+            uint8_t _read_u8(std::size_t pos, int k, std::size_t idx)
             {
                 const auto &inv = INVERSE[k];
-                return static_cast<uint8_t>((inv[_buffer[pos] & 0x0F] << 4) |
-                                             inv[_buffer[pos + 1] & 0x0F]);
+                const uint8_t raw = static_cast<uint8_t>((inv[_buffer[pos] & 0x0F] << 4) |
+                                                        inv[_buffer[pos + 1] & 0x0F]);
+                return raw ^ _scrambler.prbs_byte(idx);
             }
 
-            uint16_t _read_u16(std::size_t pos, int k) const
+            uint16_t _read_u16(std::size_t pos, int k, std::size_t idx)
             {
-                return static_cast<uint16_t>((_read_u8(pos, k) << 8) | _read_u8(pos + 2, k));
+                return static_cast<uint16_t>((_read_u8(pos, k, idx) << 8) | _read_u8(pos + 2, k, idx + 1));
             }
 
             static uint16_t _crc16(const uint8_t *data, std::size_t length)
@@ -1169,9 +1316,18 @@ int main()
         }
         iq_data.assign(samples, samples + n);
 
+
         
         low_pass_filter.process(iq_data, filtered_data);
         coarse_estimator.process(filtered_data, coarse_frequency_data);
+        if (coarse_estimator.signal_is_present() == false)
+        {
+            agc.freeze();
+        }
+        else
+        {
+            agc.unfreeze();
+        }
         rrc_filter.process(coarse_frequency_data, matched_filtered_data);
         agc.process(matched_filtered_data, agc_data);
 
