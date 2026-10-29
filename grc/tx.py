@@ -92,7 +92,7 @@ class tx(gr.top_block, Qt.QWidget):
             log=False,
             truncate=False)
         self.channels_channel_model_0 = channels.channel_model(
-            noise_voltage=0.012,
+            noise_voltage=0.3,
             frequency_offset=(12_000/samp_rate),
             epsilon=1.00008,
             taps=[1.0],

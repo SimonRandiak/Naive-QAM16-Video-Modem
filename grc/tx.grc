@@ -147,7 +147,7 @@ blocks:
     freq_offset: 12_000/samp_rate
     maxoutbuf: '0'
     minoutbuf: '0'
-    noise_voltage: '0.012'
+    noise_voltage: '0.3'
     seed: '0'
     taps: '1.0'
   states:

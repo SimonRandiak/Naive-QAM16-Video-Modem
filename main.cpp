@@ -299,6 +299,8 @@ namespace Modem
                 _log_reference = std::log(reference);
                 _log_gain = std::log(gain);
                 _epsilon = (reference * reference)*1e-10;
+                _previous_log_gain = _log_gain;
+                _acc_N = 0;
             }
 
             void process(const std::vector<cf32> &input, std::vector<cf32> &output)
@@ -316,14 +318,23 @@ namespace Modem
                     {
                         continue;
                     }
+                    _acc_N += 1;
                     _log_gain += result;
                     _log_gain = std::clamp(_log_gain, _min_log_gain, _max_log_gain);
+
+                    if (_acc_N == 16'384*2) // magic number for now nneds proper naming
+                    {
+                        _previous_log_gain = _log_gain;
+                        _acc_N = 0;
+                    }
                 }
             }
 
             void freeze()
             {
                 _freeze = true;
+                _log_gain = _previous_log_gain;
+                _acc_N = 0;
             }
 
             void unfreeze()
@@ -337,6 +348,8 @@ namespace Modem
             float _log_reference;
             float _log_gain;
             float _epsilon;
+            float _previous_log_gain;
+            int _acc_N;
             bool _freeze = false;
     };
 
@@ -1194,9 +1207,6 @@ namespace Modem
             }
     };
 }
-
-
-
 
 std::vector<Modem::cf32> read_iq_samples()
 {
