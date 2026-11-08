@@ -119,6 +119,11 @@ namespace Modem
                 _signal = false;
                 _working_buffer.clear();
             }
+
+            double peak_to_mean()
+            {
+                return _peak_to_mean;
+            }
             
         private:
             State _state = State::FREQUENCY_ESTIMATION;
@@ -134,6 +139,7 @@ namespace Modem
             float _max_offset = 50'000;
             Eigen::FFT<float> _fft;
             double _phase = 0;
+            double _peak_to_mean;
 
 
             void _estimate_frequency(const std::vector<cf32> &input)
@@ -154,7 +160,10 @@ namespace Modem
 
                     _fft.fwd(spectrum, _working_buffer);
                     //std::rotate(spectrum.begin(), spectrum.begin() + FFT_SIZE / 2, spectrum.end());
-                    if (_peak_to_mean(spectrum) > _freq_estimation_T)
+                    
+                    _peak_to_mean = _calculate_peak_to_mean(spectrum);
+                    
+                    if (_peak_to_mean > _freq_estimation_T)
                     {
                         _offset_hz = _find_offset(spectrum);
                         _signal = true;
@@ -174,7 +183,8 @@ namespace Modem
                     std::vector<cf32> spectrum;
 
                     _fft.fwd(spectrum, _working_buffer);
-                    if (_peak_to_mean(spectrum) < _signal_estimation_T)
+                    _peak_to_mean = _calculate_peak_to_mean(spectrum);
+                    if (_peak_to_mean < _signal_estimation_T)
                     {
                         _signal = false;
                     }
@@ -253,7 +263,7 @@ namespace Modem
                 }
             }
 
-            double _peak_to_mean(const std::vector<cf32>& input)
+            double _calculate_peak_to_mean(const std::vector<cf32>& input)
             {
                 float best_power = -1.0f;
                 const auto M = static_cast<std::ptrdiff_t>(input.size());
@@ -717,15 +727,14 @@ namespace Modem
                 return _mer_db;
             }
 
+            void reset()
+            {
+                _evm_error = 0.0f;
+                _evm_power = 0.0f;
+                _evm_count = 0;
+            }
+
         private:
-            int _lock_count = 1;
-            int _unlock_count = 1;
-
-            int _transition_count = 0;
-
-            float _lock_mer = 0;
-            float _unlock_mer = 0;
-
             float _evm_error = 0;
             float _evm_power = 0;
 
@@ -773,9 +782,21 @@ namespace Modem
                 bool freeze_gardner =                           false;
                 bool freeze_dd_agc =                            false;
                 bool pull_in_coeffs =                           false;
-                bool reset_frequency_estimator =                false;
                 bool allow_update_agc_previous_gain =           false;
             };
+
+            struct event
+            {
+                bool reset_frequency_estimator =    false;
+                bool reset_mer =                    false;
+
+                void reset()
+                {
+                    reset_frequency_estimator = false;
+                    reset_mer = false;
+                }
+            };
+
             enum class State
             {
                 UNLOCKED,
@@ -785,6 +806,7 @@ namespace Modem
         
             void update_mer(double mer)
             {
+                _fresh_mer = true;
                 _mer = mer;
             }
             void update_peak_to_mean(double peak_to_mean)
@@ -809,9 +831,13 @@ namespace Modem
                             _task.freeze_dd_agc = false;
                             _task.freeze_dd_pll = false;
                             _task.freeze_gardner = false;
-                            _task.reset_frequency_estimator = false;
                             _task.pull_in_coeffs = true;
                             _task.allow_update_agc_previous_gain = true;
+
+                            _event.reset_frequency_estimator = false;
+
+                            _event.reset_mer = false;
+
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         break;
@@ -822,12 +848,14 @@ namespace Modem
                             _previous_state = _current_state;
                             _current_state = State::HOLD;
                             _task.freeze_agc = true;
-                            _task.reset_frequency_estimator = false;
                             _task.freeze_dd_pll = true;
                             _task.freeze_gardner = true;
                             _task.freeze_dd_agc = true;
                             _task.pull_in_coeffs = true;
                             _task.allow_update_agc_previous_gain = false;
+
+                            _event.reset_frequency_estimator = false;
+
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         else if (_mer < _T_unlock)
@@ -836,15 +864,17 @@ namespace Modem
                             _current_state = State::UNLOCKED;
                             _task.freeze_dd_agc = true;
                             _task.pull_in_coeffs = false;
-                            _task.reset_frequency_estimator = true;
                             _task.allow_update_agc_previous_gain = false;
+
+                            _event.reset_frequency_estimator = true;
+
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         break;
                     case State::HOLD:
                         if (_peak_to_mean > _signal_presence_threshold_db)
                         {
-                            if (_mer > _T_lock)
+                            if (_mer > _T_lock && _fresh_mer == true)
                             {
                                 _previous_state = _current_state;
                                 _current_state = State::LOCKED;
@@ -853,8 +883,10 @@ namespace Modem
                                 _task.pull_in_coeffs = true;
                                 _task.freeze_dd_pll = false;
                                 _task.freeze_gardner = false;
-                                _task.reset_frequency_estimator = false;
                                 _task.allow_update_agc_previous_gain = true; 
+
+                                _event.reset_frequency_estimator = false;
+
                                 _count_of_time_samples_in_sampling_frequency = 0;
                             }
                             else if (_mer < _T_unlock)
@@ -865,9 +897,11 @@ namespace Modem
                             _task.pull_in_coeffs = false;
                             _task.freeze_dd_pll = false;
                             _task.freeze_gardner = false;
-                            _task.reset_frequency_estimator = true;
                             _task.freeze_agc = false;
                             _task.allow_update_agc_previous_gain = false;  
+
+                            _event.reset_frequency_estimator = true;
+
                             _count_of_time_samples_in_sampling_frequency = 0;              
                             }
                         }
@@ -879,13 +913,21 @@ namespace Modem
                             _task.pull_in_coeffs = false;
                             _task.freeze_dd_pll = false;
                             _task.freeze_gardner = false;
-                            _task.reset_frequency_estimator = true;
                             _task.freeze_agc = false;
-                            _task.allow_update_agc_previous_gain = false;  
+                            _task.allow_update_agc_previous_gain = false; 
+                            
+                            _event.reset_frequency_estimator = true;
+
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         break;
                 }
+                _fresh_mer = false;
+            }
+
+            void clear_events()
+            {
+                _event.reset();
             }
 
             State current_state()
@@ -898,8 +940,14 @@ namespace Modem
                 return _task;
             }
 
+            event get_event()
+            {
+                return _event;
+            }
+
         private:
             task _task;
+            event _event;
             static constexpr double _T_lock = 15.5;
             static constexpr double _T_unlock = 13.5;
 
@@ -915,6 +963,8 @@ namespace Modem
             double _mer = 0;
             double _peak_to_mean = 0;
             uint64_t _count_of_time_samples_in_sampling_frequency = 0;
+
+            bool _fresh_mer = false;
 
     };
 
@@ -1375,7 +1425,7 @@ int main()
 
         coarse_estimator.process(iq_data, coarse_frequency_data);
 
- 
+        state_machine.update_peak_to_mean(coarse_estimator.peak_to_mean()); 
 
         rrc_filter.process(coarse_frequency_data, matched_filtered_data);
         agc.process(matched_filtered_data, agc_data);
@@ -1386,6 +1436,7 @@ int main()
         const_analyzer.process(dd_agc_data);
 
 
+        state_machine.clear_events();
 
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
