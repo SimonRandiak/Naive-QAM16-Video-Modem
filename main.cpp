@@ -119,6 +119,7 @@ namespace Modem
                 _signal = false;
                 _working_buffer.clear();
             }
+            
         private:
             State _state = State::FREQUENCY_ESTIMATION;
             // Frequency resolution Fs/N
@@ -682,16 +683,9 @@ namespace Modem
         }
     };
 
-    class SyncStateMachine
+    class ConstellationAnalyzer
     {
         public:
-            enum class State
-            {
-                UNLOCKED,
-                TRANSITION,
-                LOCKED
-            };
-        
             void process(const std::vector<cf32> &input)
             {
                 for (std::size_t i = 0; i < input.size(); i++)
@@ -709,127 +703,21 @@ namespace Modem
                         _evm_error = 0.0f;
                         _evm_power = 0.0f;
                         _evm_count = 0;
-
-                        if (_state == State::UNLOCKED)
-                        {
-                            _unlock_mer += _mer_db;
-                            if (_unlock_count == _unlock_N)
-                            {
-                                float average_unlock_mer = (_unlock_mer / _unlock_count);
-                                if (average_unlock_mer >= _T_lock)
-                                {
-                                    //_state = State::TRANSITION;
-                                    _previous_state = State::UNLOCKED;
-                                    _update_loops = true;
-                                    _state = State::LOCKED;
-                                    _in_unlock_time = std::chrono::steady_clock::now();
-                                }
-                                _unlock_count = 0;
-                                _unlock_mer = 0;
-                            }
-                            if (true/*_state != State::TRANSITION*/)
-                            {
-                                auto elapsed = std::chrono::steady_clock::now() - _in_unlock_time;
-                                if (elapsed >= std::chrono::milliseconds(2000))
-                                {
-                                    _in_unlock_time = std::chrono::steady_clock::now();
-                                    _update_loops = true;
-                                    _reset_all = true;
-                                }
-                            }
-
-                            _unlock_count += 1;
-                        }
-                        else if (_state == State::LOCKED)
-                        {
-                            _lock_mer += _mer_db;
-
-                            if (_lock_count == _lock_N)
-                            {
-                                float average_lock_mer = (_lock_mer / _lock_count);
-                                if (average_lock_mer <= _T_unlock)
-                                {
-                                    //_state = State::TRANSITION;
-                                    _state = State::UNLOCKED;
-                                    _update_loops = true;
-                                    _in_unlock_time = std::chrono::steady_clock::now();
-                                    //_previous_state = State::LOCKED;
-                                }
-                                _lock_count = 0;
-                                _lock_mer = 0;
-                            }
-
-                            _lock_count += 1;
-                        }
-                        else if (_state == State::TRANSITION)
-                        {
-                            if (_transition_count == _transition_N)
-                            {
-                                _update_loops = true;
-                                _transition_count = 0;
-                                if (_previous_state == State::UNLOCKED)
-                                {
-                                    _state = State::LOCKED;
-                                    _previous_state = State::LOCKED;
-                                    _in_unlock_time = std::chrono::steady_clock::now();
-                                }
-                                else if (_previous_state == State::LOCKED)
-                                {
-                                    _in_unlock_time = std::chrono::steady_clock::now();
-                                    _state = State::UNLOCKED;
-                                    _previous_state = State::UNLOCKED;
-                                }
-                            }
-                            _transition_count += 1;
-                        }
-
-                        std::cerr << "[MER dB] " << _mer_db << std::endl;
-                        std::cerr << "[EVM Percentage] " << _evm_percentage << std::endl;
                     }
                 }
             }
 
-            bool update()
+            double evm_percentage()
             {
-                if (_update_loops == true)
-                {
-                    _update_loops = false;
-                    return true;
-                }
-                return false;
+                return _evm_percentage;
             }
 
-            bool reset_all()
+            double mer_db()
             {
-                if (_reset_all == true)
-                {
-                    _reset_all = false;
-                    return true;
-                }
-                return false;
-            }
-
-            State current_state()
-            {
-                return _state;
+                return _mer_db;
             }
 
         private:
-            static constexpr float _T_lock = 15.5;
-            static constexpr float _T_unlock = 13.5;
-
-            bool _update_loops = false;
-            bool _reset_all = false;
-
-           std::chrono::steady_clock::time_point _in_unlock_time = std::chrono::steady_clock::now();
-            State _state = State::UNLOCKED;
-            State _previous_state = State::UNLOCKED;
-            const int _evm_N = 1500;
-
-            const int _unlock_N = 2;
-            const int _lock_N = 4;
-            const int _transition_N = 2;
-
             int _lock_count = 1;
             int _unlock_count = 1;
 
@@ -845,6 +733,8 @@ namespace Modem
 
             float _evm_percentage = 0;
             float _mer_db = 0;
+            float _evm_N = 2000;
+
             static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
             static constexpr std::array<cf32, 16> _points = {{
@@ -870,6 +760,162 @@ namespace Modem
                 }
                 return closest;
             }
+    };
+
+    class ModemStateMachine
+    {
+        public:
+
+            struct task
+            {
+                bool freeze_agc =                               false;
+                bool freeze_dd_pll =                            false;
+                bool freeze_gardner =                           false;
+                bool freeze_dd_agc =                            false;
+                bool pull_in_coeffs =                           false;
+                bool reset_frequency_estimator =                false;
+                bool allow_update_agc_previous_gain =           false;
+            };
+            enum class State
+            {
+                UNLOCKED,
+                HOLD,
+                LOCKED,
+            };
+        
+            void update_mer(double mer)
+            {
+                _mer = mer;
+            }
+            void update_peak_to_mean(double peak_to_mean)
+            {
+                _peak_to_mean = peak_to_mean;
+            }
+
+            void update_samples_in_sampling_frequency(uint64_t sample_count)
+            {
+                _count_of_time_samples_in_sampling_frequency += sample_count;
+            }
+
+            void update()
+            {
+                switch(_current_state)
+                {
+                    case State::UNLOCKED:
+                        if (_mer > _T_lock)
+                        {
+                            _previous_state = _current_state;
+                            _current_state = State::LOCKED;
+                            _task.freeze_dd_agc = false;
+                            _task.freeze_dd_pll = false;
+                            _task.freeze_gardner = false;
+                            _task.reset_frequency_estimator = false;
+                            _task.pull_in_coeffs = true;
+                            _task.allow_update_agc_previous_gain = true;
+                            _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        break;
+                    case State::LOCKED:
+                        // Peak to mean is evaluation first (Frequency estimator is a first block in DSP chain) and mer will drop anyway too
+                        if (_peak_to_mean < _signal_presence_threshold_db)
+                        {
+                            _previous_state = _current_state;
+                            _current_state = State::HOLD;
+                            _task.freeze_agc = true;
+                            _task.reset_frequency_estimator = false;
+                            _task.freeze_dd_pll = true;
+                            _task.freeze_gardner = true;
+                            _task.freeze_dd_agc = true;
+                            _task.pull_in_coeffs = true;
+                            _task.allow_update_agc_previous_gain = false;
+                            _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        else if (_mer < _T_unlock)
+                        {
+                            _previous_state = _current_state;
+                            _current_state = State::UNLOCKED;
+                            _task.freeze_dd_agc = true;
+                            _task.pull_in_coeffs = false;
+                            _task.reset_frequency_estimator = true;
+                            _task.allow_update_agc_previous_gain = false;
+                            _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        break;
+                    case State::HOLD:
+                        if (_peak_to_mean > _signal_presence_threshold_db)
+                        {
+                            if (_mer > _T_lock)
+                            {
+                                _previous_state = _current_state;
+                                _current_state = State::LOCKED;
+                                _task.freeze_agc = false;
+                                _task.freeze_dd_agc = false;
+                                _task.pull_in_coeffs = true;
+                                _task.freeze_dd_pll = false;
+                                _task.freeze_gardner = false;
+                                _task.reset_frequency_estimator = false;
+                                _task.allow_update_agc_previous_gain = true; 
+                                _count_of_time_samples_in_sampling_frequency = 0;
+                            }
+                            else if (_mer < _T_unlock)
+                            {
+                            _previous_state = _current_state;
+                            _current_state = State::UNLOCKED;
+                            _task.freeze_dd_agc = true;
+                            _task.pull_in_coeffs = false;
+                            _task.freeze_dd_pll = false;
+                            _task.freeze_gardner = false;
+                            _task.reset_frequency_estimator = true;
+                            _task.freeze_agc = false;
+                            _task.allow_update_agc_previous_gain = false;  
+                            _count_of_time_samples_in_sampling_frequency = 0;              
+                            }
+                        }
+                        if (_count_of_time_samples_in_sampling_frequency > _time_samples_in_sampling_frequency_to_switch_to_unlock)
+                        {
+                            _previous_state = _current_state;
+                            _current_state = State::UNLOCKED;
+                            _task.freeze_dd_agc = true;
+                            _task.pull_in_coeffs = false;
+                            _task.freeze_dd_pll = false;
+                            _task.freeze_gardner = false;
+                            _task.reset_frequency_estimator = true;
+                            _task.freeze_agc = false;
+                            _task.allow_update_agc_previous_gain = false;  
+                            _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        break;
+                }
+            }
+
+            State current_state()
+            {
+                return _current_state;
+            }
+
+            task get_task()
+            {
+                return _task;
+            }
+
+        private:
+            task _task;
+            static constexpr double _T_lock = 15.5;
+            static constexpr double _T_unlock = 13.5;
+
+            // 2 seconds * Sampling rate
+            static constexpr uint64_t _time_samples_in_sampling_frequency_to_switch_to_unlock = 2 * 2'400'000;
+
+            static constexpr float _signal_presence_threshold_db = 13;
+
+            State _current_state = State::UNLOCKED;
+            State _previous_state = State::UNLOCKED;
+
+
+            double _mer = 0;
+            double _peak_to_mean = 0;
+            uint64_t _count_of_time_samples_in_sampling_frequency = 0;
+
     };
 
     class BitSlicer
@@ -1285,7 +1331,7 @@ int main()
     sock.connect("tcp://127.0.0.1:5555");
     std::cerr << "[START] src=zmq://127.0.0.1:5555  fs=2400000  rs=300000  sps=8" << std::endl;
 
-    Modem::SyncStateMachine state_machine;
+    Modem::ModemStateMachine state_machine;
     Modem::FrequencyEstimator coarse_estimator(sampling_frequency);
     Modem::FIRFilter low_pass_filter(Modem::lpf_taps.data(), Modem::lpf_taps.size());
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
@@ -1295,6 +1341,7 @@ int main()
     Modem::DDAGC dd_agc(1, 0.016, 0.5, 2);
     Modem::BitSlicer slicer;
     Modem::FrameSynchronizer frame_synchronizer;
+    Modem::ConstellationAnalyzer const_analyzer;
 
     std::vector<Modem::cf32> iq_data(4096*5);
     std::vector<Modem::cf32> coarse_frequency_data;
@@ -1326,44 +1373,18 @@ int main()
         }
         iq_data.assign(samples, samples + n);
 
+        coarse_estimator.process(iq_data, coarse_frequency_data);
 
-        
-        low_pass_filter.process(iq_data, filtered_data);
-        coarse_estimator.process(filtered_data, coarse_frequency_data);
-        if (coarse_estimator.signal_is_present() == false)
-        {
-            agc.freeze();
-        }
-        else
-        {
-            agc.unfreeze();
-        }
+ 
+
         rrc_filter.process(coarse_frequency_data, matched_filtered_data);
         agc.process(matched_filtered_data, agc_data);
 
         timing_loop.process(agc_data, time_synchronized_data);
         pll_loop.process(time_synchronized_data, phase_synchronized_data);
         dd_agc.process(phase_synchronized_data, dd_agc_data);
+        const_analyzer.process(dd_agc_data);
 
-        state_machine.process(dd_agc_data);
-
-        if (state_machine.update())
-        {
-            if (state_machine.current_state() == Modem::SyncStateMachine::State::LOCKED)
-            {
-                dd_agc.unfreeze();
-                pll_loop.setBnTs(0.015);
-            }
-            else if (state_machine.current_state() == Modem::SyncStateMachine::State::UNLOCKED)
-            {
-                dd_agc.reset();
-                dd_agc.freeze();
-                pll_loop.setBnTs(0.060);
-                coarse_estimator.reset();
-                pll_loop.reset();
-                timing_loop.reset();
-            }
-        }
 
 
         slicer.process(dd_agc_data, bits);
