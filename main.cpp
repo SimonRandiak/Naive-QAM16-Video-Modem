@@ -124,6 +124,16 @@ namespace Modem
             {
                 return _peak_to_mean;
             }
+
+            bool new_estimate()
+            {
+                if (_new_estimate_available == true)
+                {
+                    _new_estimate_available = false;
+                    return true;
+                }
+                return false;
+            }
             
         private:
             State _state = State::FREQUENCY_ESTIMATION;
@@ -140,6 +150,7 @@ namespace Modem
             Eigen::FFT<float> _fft;
             double _phase = 0;
             double _peak_to_mean;
+            bool _new_estimate_available = false;
 
 
             void _estimate_frequency(const std::vector<cf32> &input)
@@ -168,10 +179,12 @@ namespace Modem
                         _offset_hz = _find_offset(spectrum);
                         _signal = true;
                         _state = State::TRACKING_SIGNAL;
+                        _new_estimate_available = true;
                     }
                     _working_buffer.clear();
                 }
             }
+
 
             void _estimate_signal_presence(const std::vector<cf32> &input)
             {
@@ -333,9 +346,12 @@ namespace Modem
                     _log_gain += result;
                     _log_gain = std::clamp(_log_gain, _min_log_gain, _max_log_gain);
 
-                    if (_acc_N == 16'384*2) // magic number for now nneds proper naming
+                    if (_acc_N >= 16'384*2) // magic number for now nneds proper naming
                     {
-                        _previous_log_gain = _log_gain;
+                        if (_gain_storing == true)
+                        {
+                            _previous_log_gain = _log_gain;
+                        }
                         _acc_N = 0;
                     }
                 }
@@ -352,6 +368,16 @@ namespace Modem
             {
                 _freeze = false;
             }
+
+            void enable_storing_gain()
+            {
+                _gain_storing = true;
+            }
+
+            void disable_storing_gain()
+            {
+                _gain_storing = false;
+            }
         private:
             float _max_log_gain;
             float _min_log_gain;
@@ -362,7 +388,9 @@ namespace Modem
             float _previous_log_gain;
             int _acc_N;
             bool _freeze = false;
+            bool _gain_storing = false;
     };
+
 
     // Implementation from https://doi.org/10.1109/TCOM.1975.1092840
     class DDAGC
@@ -541,14 +569,20 @@ namespace Modem
             while (_t + 1.0f < static_cast<float>(_working_buffer.size()))
             {
                 const cf32 y = interp(_t);
+                output.push_back(y);
                 const cf32 mid = interp(0.5f * (_t_prev + _t));
-
+                if (_freeze == true)
+                {
+                    _prev_symbol = y;
+                    _t_prev = _t;
+                    _t += _sps / (1.0f + _v);
+                    continue;
+                }
                 float e = (y.real() - _prev_symbol.real()) * mid.real() + (y.imag() - _prev_symbol.imag()) * mid.imag();
 
                 _integral = std::clamp(_integral + _coeffs.K_I * e, -_vmax, _vmax);
                 _v = std::clamp(_coeffs.K_P * e + _integral, -_vmax, _vmax);
 
-                output.push_back(y);
                 _prev_symbol = y;
                 _t_prev = _t;
                 _t += _sps / (1.0f + _v);
@@ -564,6 +598,16 @@ namespace Modem
         {
             _coeffs.K_D = kD;
             _coeffs.calculate(BnTs);
+        }
+
+        void freeze()
+        {
+            _freeze = true;
+        }
+
+        void unfreeze()
+        {
+            _freeze = false;
         }
 
         void reset()
@@ -589,6 +633,7 @@ namespace Modem
         float _v = 0.0f, _integral = 0.0f, _vmax = 0.15f;
         cf32  _prev_symbol{0.0f, 0.0f};
         std::vector<cf32> _working_buffer;
+        bool _freeze = false;
     };
 
     class DDPLL
@@ -609,6 +654,12 @@ namespace Modem
                 cf32 current = input[i];
                 cf32 derotated = current * std::polar(1.0f, -_phase);
                 output.push_back(derotated);
+                if (_freeze == true)
+                {
+                    _phase += _integral;
+                    _wrap_phase();
+                    continue;
+                }
 
                 cf32 nearest_point = _find_nearest(derotated);
                 float error = _cross_product_normalized(derotated, nearest_point);
@@ -635,6 +686,16 @@ namespace Modem
             _phase = 0;
         }
 
+        void freeze()
+        {
+            _freeze = true;
+        }
+
+        void unfreeze()
+        {
+            _freeze = false;
+        }
+
     private:
 
         PLLCoefficients _coeffs;
@@ -642,6 +703,7 @@ namespace Modem
         float _phase = 0;
         // 215 Hz is doppler frequency with 40 km/h + 5000Hz reserve for drift
         const float _frequency_clamp = 2*std::numbers::pi_v<float> * ((215.0f+5000.0f) /  300'000.0f);
+        bool _freeze = false;
 
         static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
@@ -708,6 +770,7 @@ namespace Modem
                     _evm_count += 1;
                     if (_evm_count == _evm_N)
                     {
+                        _new_metrics_avaliable = true;
                         _evm_percentage = 100 * std::sqrt(_evm_error / _evm_power);
                         _mer_db = 10 * std::log10(_evm_power / _evm_error);
                         _evm_error = 0.0f;
@@ -734,6 +797,16 @@ namespace Modem
                 _evm_count = 0;
             }
 
+            bool new_metrics()
+            {
+                if (_new_metrics_avaliable == true)
+                {
+                    _new_metrics_avaliable = false;
+                    return true;
+                }
+                return false;
+            }
+
         private:
             float _evm_error = 0;
             float _evm_power = 0;
@@ -743,6 +816,7 @@ namespace Modem
             float _evm_percentage = 0;
             float _mer_db = 0;
             float _evm_N = 2000;
+            bool _new_metrics_avaliable = false;
 
             static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
 
@@ -775,24 +849,38 @@ namespace Modem
     {
         public:
 
+            ModemStateMachine()
+            {
+                _task.freeze_dd_agc = true;
+                _task.narrow_loop = false;
+                _task.freeze_dd_pll = false;
+                _task.freeze_gardner = false;
+                _task.freeze_agc = false;
+                _task.allow_update_agc_previous_gain = false; 
+                
+                _event.reset_frequency_estimator = true;
+                _event.reset_loops = true;
+            }
             struct task
             {
                 bool freeze_agc =                               false;
                 bool freeze_dd_pll =                            false;
                 bool freeze_gardner =                           false;
                 bool freeze_dd_agc =                            false;
-                bool pull_in_coeffs =                           false;
+                bool narrow_loop =                              false;
                 bool allow_update_agc_previous_gain =           false;
             };
 
             struct event
             {
                 bool reset_frequency_estimator =    false;
+                bool reset_loops =                  false;
                 bool reset_mer =                    false;
 
                 void reset()
                 {
                     reset_frequency_estimator = false;
+                    reset_loops = false;
                     reset_mer = false;
                 }
             };
@@ -821,17 +909,27 @@ namespace Modem
 
             void update()
             {
+
+                bool signal_present = _peak_to_mean > _signal_presence_threshold_db;
+
+                if (_fresh_frequency_estimate == true)
+                {
+                    _event.reset_loops = true;
+                    _event.reset_mer = true;
+                    _count_of_time_samples_in_sampling_frequency = 0;
+                }
                 switch(_current_state)
                 {
                     case State::UNLOCKED:
-                        if (_mer > _T_lock)
+                        if (_mer > _T_lock && _fresh_mer == true)
                         {
                             _previous_state = _current_state;
                             _current_state = State::LOCKED;
                             _task.freeze_dd_agc = false;
                             _task.freeze_dd_pll = false;
                             _task.freeze_gardner = false;
-                            _task.pull_in_coeffs = true;
+                            _task.narrow_loop = true;
+                            _task.freeze_agc = false;
                             _task.allow_update_agc_previous_gain = true;
 
                             _event.reset_frequency_estimator = false;
@@ -839,6 +937,19 @@ namespace Modem
                             _event.reset_mer = false;
 
                             _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        else if (_count_of_time_samples_in_sampling_frequency > _reacquisition_period_samples)
+                        {
+                            _event.reset_frequency_estimator = true;
+                            _count_of_time_samples_in_sampling_frequency = 0;
+                        }
+                        if (_peak_to_mean > _signal_presence_threshold_db)
+                        {
+                            _task.freeze_agc = false;
+                        }
+                        else
+                        {
+                            _task.freeze_agc = true;
                         }
                         break;
                     case State::LOCKED:
@@ -851,27 +962,35 @@ namespace Modem
                             _task.freeze_dd_pll = true;
                             _task.freeze_gardner = true;
                             _task.freeze_dd_agc = true;
-                            _task.pull_in_coeffs = true;
+                            _task.narrow_loop = true;
                             _task.allow_update_agc_previous_gain = false;
 
                             _event.reset_frequency_estimator = false;
 
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
-                        else if (_mer < _T_unlock)
+                        else if (_mer < _T_unlock && _fresh_mer == true)
                         {
                             _previous_state = _current_state;
-                            _current_state = State::UNLOCKED;
+                            _current_state = State::HOLD;
                             _task.freeze_dd_agc = true;
-                            _task.pull_in_coeffs = false;
+                            _task.narrow_loop = false;
+                            _task.freeze_agc = true;
+                            _task.freeze_gardner = true;
                             _task.allow_update_agc_previous_gain = false;
 
                             _event.reset_frequency_estimator = true;
+                            _event.reset_loops = true;
 
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         break;
                     case State::HOLD:
+                        if (signal_present == true && _signal_was_present == false)
+                        {
+                            _event.reset_mer = true;
+                            _fresh_mer = false;
+                        }
                         if (_peak_to_mean > _signal_presence_threshold_db)
                         {
                             if (_mer > _T_lock && _fresh_mer == true)
@@ -880,7 +999,7 @@ namespace Modem
                                 _current_state = State::LOCKED;
                                 _task.freeze_agc = false;
                                 _task.freeze_dd_agc = false;
-                                _task.pull_in_coeffs = true;
+                                _task.narrow_loop = true;
                                 _task.freeze_dd_pll = false;
                                 _task.freeze_gardner = false;
                                 _task.allow_update_agc_previous_gain = true; 
@@ -889,20 +1008,21 @@ namespace Modem
 
                                 _count_of_time_samples_in_sampling_frequency = 0;
                             }
-                            else if (_mer < _T_unlock)
+                            else if (_mer < _T_unlock && _fresh_mer == true && signal_present)
                             {
-                            _previous_state = _current_state;
-                            _current_state = State::UNLOCKED;
-                            _task.freeze_dd_agc = true;
-                            _task.pull_in_coeffs = false;
-                            _task.freeze_dd_pll = false;
-                            _task.freeze_gardner = false;
-                            _task.freeze_agc = false;
-                            _task.allow_update_agc_previous_gain = false;  
+                                _previous_state = _current_state;
+                                _current_state = State::UNLOCKED;
+                                _task.freeze_dd_agc = true;
+                                _task.narrow_loop = false;
+                                _task.freeze_dd_pll = false;
+                                _task.freeze_gardner = false;
+                                _task.freeze_agc = false;
+                                _task.allow_update_agc_previous_gain = false;  
 
-                            _event.reset_frequency_estimator = true;
+                                _event.reset_frequency_estimator = true;
+                                _event.reset_loops = true;
 
-                            _count_of_time_samples_in_sampling_frequency = 0;              
+                                _count_of_time_samples_in_sampling_frequency = 0;              
                             }
                         }
                         if (_count_of_time_samples_in_sampling_frequency > _time_samples_in_sampling_frequency_to_switch_to_unlock)
@@ -910,19 +1030,22 @@ namespace Modem
                             _previous_state = _current_state;
                             _current_state = State::UNLOCKED;
                             _task.freeze_dd_agc = true;
-                            _task.pull_in_coeffs = false;
+                            _task.narrow_loop = false;
                             _task.freeze_dd_pll = false;
                             _task.freeze_gardner = false;
                             _task.freeze_agc = false;
                             _task.allow_update_agc_previous_gain = false; 
                             
                             _event.reset_frequency_estimator = true;
+                            _event.reset_loops = true;
 
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
                         break;
                 }
+                _signal_was_present = signal_present;
                 _fresh_mer = false;
+                _fresh_frequency_estimate = false;
             }
 
             void clear_events()
@@ -944,16 +1067,24 @@ namespace Modem
             {
                 return _event;
             }
+            void update_frequency_estimate()
+            {
+                _fresh_frequency_estimate = true;
+            }
 
         private:
             task _task;
             event _event;
+
+            // UNLOCKED state
+
             static constexpr double _T_lock = 15.5;
             static constexpr double _T_unlock = 13.5;
 
             // 2 seconds * Sampling rate
             static constexpr uint64_t _time_samples_in_sampling_frequency_to_switch_to_unlock = 2 * 2'400'000;
-
+            static constexpr uint64_t _reacquisition_period_samples = 2 * 2'400'000;
+            
             static constexpr float _signal_presence_threshold_db = 13;
 
             State _current_state = State::UNLOCKED;
@@ -965,6 +1096,8 @@ namespace Modem
             uint64_t _count_of_time_samples_in_sampling_frequency = 0;
 
             bool _fresh_mer = false;
+            bool _fresh_frequency_estimate = false;
+            bool _signal_was_present = false;
 
     };
 
@@ -1375,7 +1508,9 @@ void write_video_to_stdout(const std::vector<Modem::Packet>& packets)
 int main()
 {
 
-    static constexpr float sampling_frequency = 2'400'000;
+    static constexpr float sampling_frequency    = 2'400'000;
+    static constexpr float pll_bn_ts_acquisition = 0.06f;
+    static constexpr float pll_bn_ts_tracking    = 0.015f;
     zmq::context_t ctx;
     zmq::socket_t sock(ctx, zmq::socket_type::pull);
     sock.connect("tcp://127.0.0.1:5555");
@@ -1405,7 +1540,86 @@ int main()
     std::vector<Modem::Packet> packets;
 
 
-    dd_agc.freeze();
+    auto apply_state_machine_commands = [&]()
+    {
+        Modem::ModemStateMachine::event events = state_machine.get_event();
+        Modem::ModemStateMachine::task tasks = state_machine.get_task();
+
+        // Events: one-shot, executed once and then cleared
+        if (events.reset_frequency_estimator)
+        {
+            coarse_estimator.reset();
+        }
+
+        if (events.reset_loops)
+        {
+            pll_loop.reset();
+            dd_agc.reset();
+        }
+
+        if (events.reset_mer)
+        {
+            const_analyzer.reset();
+        }
+
+        state_machine.clear_events();
+
+        // Levels: valid for the whole state, safe to apply on every block
+        if (tasks.freeze_agc)
+        {
+            agc.freeze();
+        }
+        else
+        {
+            agc.unfreeze();
+        }
+
+        if (tasks.freeze_dd_agc)
+        {
+            dd_agc.freeze();
+        }
+        else
+        {
+            dd_agc.unfreeze();
+        }
+
+        if (tasks.freeze_dd_pll)
+        {
+            pll_loop.freeze();
+        }
+        else
+        {
+            pll_loop.unfreeze();
+        }
+
+        if (tasks.freeze_gardner)
+        {
+            timing_loop.freeze();
+        }
+        else
+        {
+            timing_loop.unfreeze();
+        }
+
+        if (tasks.allow_update_agc_previous_gain)
+        {
+            agc.enable_storing_gain();
+        }
+        else
+        {
+            agc.disable_storing_gain();
+        }
+
+        if (tasks.narrow_loop)
+        {
+            pll_loop.setBnTs(pll_bn_ts_tracking);
+        }
+        else
+        {
+            pll_loop.setBnTs(pll_bn_ts_acquisition);
+        }
+    };
+
 
     while (true)
     {
@@ -1422,10 +1636,20 @@ int main()
             continue;
         }
         iq_data.assign(samples, samples + n);
+        low_pass_filter.process(iq_data, filtered_data);
 
-        coarse_estimator.process(iq_data, coarse_frequency_data);
+        coarse_estimator.process(filtered_data, coarse_frequency_data);
+        state_machine.update_samples_in_sampling_frequency(n);
 
         state_machine.update_peak_to_mean(coarse_estimator.peak_to_mean()); 
+        if (coarse_estimator.new_estimate() == true)
+        {
+            state_machine.update_frequency_estimate();
+        }
+        // Update frequency _peak_to_mean
+        state_machine.update();
+        apply_state_machine_commands();
+
 
         rrc_filter.process(coarse_frequency_data, matched_filtered_data);
         agc.process(matched_filtered_data, agc_data);
@@ -1435,8 +1659,14 @@ int main()
         dd_agc.process(phase_synchronized_data, dd_agc_data);
         const_analyzer.process(dd_agc_data);
 
+        if (const_analyzer.new_metrics() == true)
+        {
+            state_machine.update_mer(const_analyzer.mer_db());
+        }
 
-        state_machine.clear_events();
+        state_machine.update();
+        apply_state_machine_commands();
+
 
         slicer.process(dd_agc_data, bits);
         frame_synchronizer.process(bits, packets);
