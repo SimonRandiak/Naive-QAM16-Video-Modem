@@ -9,6 +9,7 @@
 #include <numbers>
 #include <fstream>
 #include <chrono>
+#include <bit>
 
 #include <zmq.hpp>
 #include <unsupported/Eigen/FFT>
@@ -118,6 +119,7 @@ namespace Modem
                 _state = State::FREQUENCY_ESTIMATION;
                 _signal = false;
                 _working_buffer.clear();
+                _peak_to_mean = 0;
             }
 
             double peak_to_mean()
@@ -1234,6 +1236,175 @@ namespace Modem
             std::array<uint8_t, 256> _table;
     };
 
+    inline uint8_t bit_parity(uint32_t x)
+    {
+        return std::popcount(x) & 1u;
+    }
+
+    inline uint8_t hamming_distance(uint8_t a, uint8_t b)
+    {
+        return std::popcount(static_cast<uint8_t>(a ^ b));
+    }
+
+    class K7Encoder
+    {
+        public:
+            struct encoder_t
+            {
+                uint8_t a1 = 0;
+                uint8_t a2 = 0;
+                uint8_t reg = 0x00;
+                uint8_t state = 0x00;
+            };
+
+            K7Encoder(uint8_t state)
+            {
+                _state = state;
+            }
+
+            encoder_t process(uint8_t bit)
+            {
+                bit = bit & 1;
+                _register = ((_state << 1) | bit);
+
+                uint8_t a1 = bit_parity(_register & _G1);
+                uint8_t a2 = bit_parity(_register & _G2);
+
+                _state = _register & 0x3F;
+
+                encoder_t e;
+                e.a1 = a1;
+                e.a2 = a2;
+                e.reg = _register;
+                e.state = _state;
+
+                return e;
+            }
+        private:
+            uint8_t _G1 = 0x4F;
+            uint8_t _G2 = 0x6D;
+            uint8_t _register = 0x00;
+            uint8_t _state = 0x00;
+    };
+
+    class ViterbiDecoder
+    {
+        public:
+            ViterbiDecoder()
+            {
+                for (int i = 0; i < _NUM_STATES; i++)
+                {
+                    for (uint8_t bit = 0; bit < 2; bit++)
+                    {
+                        auto t = K7Encoder(i);
+                        K7Encoder::encoder_t stats = t.process(bit);
+                        _table[i][bit] = (stats.a1 << 1) | stats.a2;
+                    }
+                }
+                reset();
+            }
+
+            // received_pair = (a1 << 1) | a2
+            void acs(uint8_t received_pair)
+            {
+                _pm_new.fill(1'000'000);
+                uint64_t d = 0;
+                for (uint8_t i = 0; i < 64; i++)
+                {
+
+                    uint8_t bit = i & 0x01;
+                    // from which state I came two possiblities either 1 or 0
+                    uint8_t possible_incoming_state_1 = (i >> 1);
+                    uint8_t possible_incoming_state_2 = (i >> 1) | 0b100000;
+
+                    uint8_t bits_1 = _table[possible_incoming_state_1][bit];
+                    uint8_t bits_2 = _table[possible_incoming_state_2][bit];
+
+                    int metric_1 = _pm_old[possible_incoming_state_1] + hamming_distance(bits_1, received_pair);
+                    int metric_2 = _pm_old[possible_incoming_state_2] + hamming_distance(bits_2, received_pair);
+
+                    if (metric_2 < metric_1)
+                    {
+                        _pm_new[i] = metric_2;
+                        d |= uint64_t(1) << i;
+                    }
+                    else
+                    {
+                        _pm_new[i] = metric_1;
+                    }
+
+                }
+                _decision.push_back(d);
+                std::swap(_pm_old, _pm_new);
+            }
+
+            void reset()
+            {
+                _pm_old.fill(1'000'000);
+                _pm_old[0] = 0;
+                _decision.clear();
+            }
+
+            std::vector<uint8_t> traceback()
+            {
+                std::vector<uint8_t> bits;
+                bits.reserve(_decision.size());
+                // Because of trailing zeores we are sure we are starting from 00 state at the end
+                uint64_t state = 0x00;
+                for (int64_t i = _decision.size() - 1; i >= 0; i--)
+                {
+                    uint8_t bit = (state & 1);
+                    bits.push_back(bit);
+                    // Get bit from last register before shift
+                    uint64_t bit_state = (_decision[i] >> state) & 1;
+                    // create new state because bit_state was last and after shift it got removed it needs to go first again
+                    // bit_state u[t-6] ... u[t-1]
+                    state = ((bit_state << 5) | state >> 1);
+                }
+                std::reverse(bits.begin(), bits.end());
+                return bits;
+            }
+
+            int path_metric() const
+            {
+                return _pm_old[0];
+            }
+
+            void decode_bytes(const uint8_t* coded, std::size_t coded_size, std::vector<uint8_t>& out)
+            {
+                reset();
+                for (std::size_t i = 0; i < coded_size; i++)
+                {
+                    for (int shift = 6; shift >= 0; shift -= 2)
+                    {
+                        acs((coded[i] >> shift) & 0x03);
+                    }
+                }
+
+                std::vector<uint8_t> bits = traceback();
+                const std::size_t n_bytes = bits.size() / 8;
+
+                out.clear();
+                for (std::size_t b = 0; b + 1 < n_bytes; b++)
+                {
+                    uint8_t byte = 0;
+                    for (int k = 0; k < 8; k++)
+                    {
+                        byte = static_cast<uint8_t>((byte << 1) | bits[8 * b + k]);
+                    }
+                    out.push_back(byte);
+                }
+            }
+
+        private:
+        static constexpr int _K = 7;
+        static constexpr int _NUM_STATES = 1 << (_K - 1);
+        std::array<std::array<uint8_t, 2>, 64> _table;
+        std::array<int, 64> _pm_old{};
+        std::array<int, 64> _pm_new{};
+        std::vector<uint64_t> _decision;
+    };
+
     class FrameSynchronizer
     {
         public:
@@ -1325,32 +1496,44 @@ namespace Modem
                     if (pos + HEADER_NIBBLES > _buffer.size())
                         break;
 
-                    const uint16_t length = _read_u16(pos + SYNC_NIBBLES, k, 0);
+                    // Hlavicka: kodovany blok (length + tail) -> 2 bajty
+                    _read_coded(pos + SYNC_NIBBLES, HEADER_CODED_BYTES, k);
+                    _viterbi.decode_bytes(_coded.data(), _coded.size(), _decoded);
+                    const uint16_t length = static_cast<uint16_t>(
+                        ((_decoded[0] ^ _scrambler.prbs_byte(0)) << 8) |
+                         (_decoded[1] ^ _scrambler.prbs_byte(1)));
                     if (length == 0 || length > max_length)
                     {
                         ++pos;
                         continue;
                     }
 
+                    // Payload + CRC + tail: kodovany blok -> length + 2 bajty
                     const std::size_t payload_start = pos + HEADER_NIBBLES;
-                    const std::size_t crc_start = payload_start + 2u * length;
-                    const std::size_t packet_end = crc_start + CRC_NIBBLES;
+                    const std::size_t payload_coded_bytes = 2u * (length + 3u);
+                    const std::size_t packet_end = payload_start + 2u * payload_coded_bytes;
 
                     if (packet_end > _buffer.size())
                         break;
+
+                    _read_coded(payload_start, payload_coded_bytes, k);
+                    _viterbi.decode_bytes(_coded.data(), _coded.size(), _decoded);
 
                     Packet packet;
                     packet.sync_word = sync_word;
                     packet.length = length;
                     packet.data.resize(length);
                     for (std::size_t j = 0; j < length; ++j)
-                        packet.data[j] = _read_u8(payload_start + 2 * j, k, 2 + j);
-                    packet.crc = _read_u16(crc_start, k, 2 + length);
+                        packet.data[j] = _decoded[j] ^ _scrambler.prbs_byte(2 + j);
+                    packet.crc = static_cast<uint16_t>(
+                        ((_decoded[length] ^ _scrambler.prbs_byte(2 + length)) << 8) |
+                         (_decoded[length + 1] ^ _scrambler.prbs_byte(3 + length)));
 
                     if (packet.crc == _crc16(packet.data.data(), length))
                     {
                         _rotation = k;
                         ++_packets_ok;
+                        _corrected_bits += static_cast<std::size_t>(_viterbi.path_metric());
                         output.push_back(std::move(packet));
                         pos = packet_end;
                     }
@@ -1370,6 +1553,7 @@ namespace Modem
                 _rotation = -1;
                 _packets_ok = 0;
                 _crc_errors = 0;
+                _corrected_bits = 0;
             }
 
             void reset_crc_errors()
@@ -1380,11 +1564,15 @@ namespace Modem
             int rotation() const { return _rotation; }
             std::size_t packets_ok() const { return _packets_ok; }
             std::size_t crc_errors() const { return _crc_errors; }
+            // Kolko kodovanych bitov Viterbi opravil v dobrych paketoch (od resetu)
+            std::size_t corrected_bits() const { return _corrected_bits; }
 
         private:
             static constexpr std::size_t SYNC_NIBBLES = 8;
-            static constexpr std::size_t HEADER_NIBBLES = SYNC_NIBBLES + 4;
-            static constexpr std::size_t CRC_NIBBLES = 4;
+            static constexpr int SYNC_MAX_BIT_ERRORS = 4;
+            // Hlavicka: (2 bajty length + 1 tail bajt) * 2 = 6 kodovanych bajtov = 12 nibblov
+            static constexpr std::size_t HEADER_CODED_BYTES = 2 * (2 + 1);
+            static constexpr std::size_t HEADER_NIBBLES = SYNC_NIBBLES + 2 * HEADER_CODED_BYTES;
 
             Scrambler _scrambler;
 
@@ -1392,6 +1580,11 @@ namespace Modem
             int _rotation = -1;
             std::size_t _packets_ok = 0;
             std::size_t _crc_errors = 0;
+            std::size_t _corrected_bits = 0;
+
+            ViterbiDecoder _viterbi;
+            std::vector<uint8_t> _coded;
+            std::vector<uint8_t> _decoded;
 
             int _match_sync(std::size_t pos) const
             {
@@ -1399,23 +1592,27 @@ namespace Modem
                 for (std::size_t i = 0; i < SYNC_NIBBLES; ++i)
                     word = (word << 4) | (_buffer[pos + i] & 0x0F);
 
+                // Sync nie je kodovany, preto tolerujeme par chybnych bitov.
+                // Rotovane sync slova sa navzajom lisia v 16 bitoch, 4 chyby su bezpecne.
                 for (int k = 0; k < 4; ++k)
-                    if (word == SYNC_ROT[k])
+                    if (std::popcount(word ^ SYNC_ROT[k]) <= SYNC_MAX_BIT_ERRORS)
                         return k;
                 return -1;
             }
 
-            uint8_t _read_u8(std::size_t pos, int k, std::size_t idx)
+            uint8_t _read_raw_u8(std::size_t pos, int k)
             {
                 const auto &inv = INVERSE[k];
-                const uint8_t raw = static_cast<uint8_t>((inv[_buffer[pos] & 0x0F] << 4) |
-                                                        inv[_buffer[pos + 1] & 0x0F]);
-                return raw ^ _scrambler.prbs_byte(idx);
+                return static_cast<uint8_t>((inv[_buffer[pos] & 0x0F] << 4) |
+                                            inv[_buffer[pos + 1] & 0x0F]);
             }
 
-            uint16_t _read_u16(std::size_t pos, int k, std::size_t idx)
+            // Precita n kodovanych bajtov (2 nibble na bajt) od pozicie pos do _coded
+            void _read_coded(std::size_t pos, std::size_t n, int k)
             {
-                return static_cast<uint16_t>((_read_u8(pos, k, idx) << 8) | _read_u8(pos + 2, k, idx + 1));
+                _coded.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    _coded[i] = _read_raw_u8(pos + 2 * i, k);
             }
 
             static uint16_t _crc16(const uint8_t *data, std::size_t length)
@@ -1512,9 +1709,14 @@ int main()
     static constexpr float pll_bn_ts_acquisition = 0.06f;
     static constexpr float pll_bn_ts_tracking    = 0.015f;
     zmq::context_t ctx;
-    zmq::socket_t sock(ctx, zmq::socket_type::pull);
+    zmq::socket_t sock(ctx, zmq::socket_type::sub);
+
+    sock.set(zmq::sockopt::rcvhwm, 16);
+    sock.set(zmq::sockopt::rcvbuf, 128 * 1024);
+    sock.set(zmq::sockopt::subscribe, "");
+
     sock.connect("tcp://127.0.0.1:5555");
-    std::cerr << "[START] src=zmq://127.0.0.1:5555  fs=2400000  rs=300000  sps=8" << std::endl;
+    std::cerr << "[START] SUB src=zmq://127.0.0.1:5555  fs=2400000  rs=300000  sps=8" << std::endl;
 
     Modem::ModemStateMachine state_machine;
     Modem::FrequencyEstimator coarse_estimator(sampling_frequency);
