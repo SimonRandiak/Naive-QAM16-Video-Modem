@@ -151,7 +151,7 @@ namespace Modem
             float _max_offset = 50'000;
             Eigen::FFT<float> _fft;
             double _phase = 0;
-            double _peak_to_mean;
+            double _peak_to_mean = 0;
             bool _new_estimate_available = false;
 
 
@@ -313,6 +313,53 @@ namespace Modem
 
     };
 
+    class QAM16Constellation
+    {
+        public:
+            static constexpr std::size_t size = 16;
+            static constexpr double Es = 1.0f;
+            static constexpr std::size_t bits_per_symbol = 4;
+            static constexpr double Eb = 1.0f / bits_per_symbol;
+
+            static constexpr cf32 slice(const cf32 &a)
+            {
+                return {_slice(a.real()), _slice(a.imag())};
+            }
+
+            static constexpr const std::array<cf32, 16> &points()
+            {
+                return _points;
+            }
+
+        private:
+            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
+
+            static constexpr std::array<cf32, 16> _points = {{
+                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
+                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
+                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
+                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
+            }};
+            static constexpr float _slice(float x)
+            {
+                if (x < -2.0f * A)
+                {
+                    return -3.0f * A;
+                }
+                if (x < 0.0f)
+                {
+                    return -1.0f * A;
+                }
+                if (x < 2.0f * A)
+                {
+                    return 1.0f * A;
+                }
+
+                return 3.0f * A;
+            }
+
+    };
+
     // Implementation from https://wiki.gnuradio.org/index.php/AGC
     class AGC
     {
@@ -413,11 +460,12 @@ namespace Modem
                 for (std::size_t i = 0; i < input.size(); i++)
                 {
                     cf32 sample = input[i] * _gain;
-                    cf32 nearest = _find_nearest(sample);
+                    cf32 z = QAM16Constellation::slice(sample);
+
                     output.push_back(sample);
 
-                    float error_i = std::abs(nearest.real()) - std::abs(sample.real());
-                    float error_q = std::abs(nearest.imag()) - std::abs(sample.imag());
+                    float error_i = std::abs(z.real()) - std::abs(sample.real());
+                    float error_q = std::abs(z.imag()) - std::abs(sample.imag());
                     if (_freeze == true)
                     {
                         continue;
@@ -447,31 +495,6 @@ namespace Modem
             float _gain = 1;
             bool _freeze = false;
 
-            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
-
-            static constexpr std::array<cf32, 16> _points = {{
-                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
-                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
-                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
-                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
-            }};
-
-            cf32 _find_nearest(const cf32 &a)
-            {
-                cf32 closest{0.0f, 0.0f};
-                float minimal_distance = std::numeric_limits<float>::max();
-                for (std::size_t i = 0; i < _points.size(); i++)
-                {
-                    cf32 point = _points[i];
-                    float distance = std::abs(a - point);
-                    if (distance < minimal_distance)
-                    {
-                        minimal_distance = distance;
-                        closest = point;
-                    }
-                }
-                return closest;
-            }
     };
 
     class FIRFilter
@@ -663,8 +686,8 @@ namespace Modem
                     continue;
                 }
 
-                cf32 nearest_point = _find_nearest(derotated);
-                float error = _cross_product_normalized(derotated, nearest_point);
+                cf32 z = QAM16Constellation::slice(derotated);
+                float error = _cross_product_normalized(derotated, z);
                 // PLL related
                 _integral += (_coeffs.K_I * error);
 
@@ -707,32 +730,6 @@ namespace Modem
         const float _frequency_clamp = 2*std::numbers::pi_v<float> * ((215.0f+5000.0f) /  300'000.0f);
         bool _freeze = false;
 
-        static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
-
-        static constexpr std::array<cf32, 16> _points = {{
-            {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
-            {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
-            {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
-            {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
-        }};
-
-        cf32 _find_nearest(const cf32 &a)
-        {
-            cf32 closest{0.0f, 0.0f};
-            float minimal_distance = std::numeric_limits<float>::max();
-            for (std::size_t i = 0; i < _points.size(); i++)
-            {
-                cf32 point = _points[i];
-                float distance = std::abs(a - point);
-                if (distance < minimal_distance)
-                {
-                    minimal_distance = distance;
-                    closest = point;
-                }
-            }
-            return closest;
-        }
-
         float _cross_product(const cf32 &a, const cf32 &b)
         {
             return (b.real() * a.imag()) - (b.imag() * a.real());
@@ -766,9 +763,9 @@ namespace Modem
                 {
                     cf32 current = input[i];
 
-                    cf32 nearest_point = _find_nearest(current);
-                    _evm_error += std::norm(current - nearest_point);
-                    _evm_power += std::norm(nearest_point);
+                    cf32 z = QAM16Constellation::slice(current);
+                    _evm_error += std::norm(current - z);
+                    _evm_power += std::norm(z);
                     _evm_count += 1;
                     if (_evm_count == _evm_N)
                     {
@@ -819,32 +816,6 @@ namespace Modem
             float _mer_db = 0;
             float _evm_N = 2000;
             bool _new_metrics_avaliable = false;
-
-            static constexpr float A = 0.31622776601683794f; // 1/sqrt(10) = Es = 1
-
-            static constexpr std::array<cf32, 16> _points = {{
-                {-3*A, -3*A}, {-3*A, -1*A}, {-3*A, +3*A}, {-3*A, +1*A},
-                {-1*A, -3*A}, {-1*A, -1*A}, {-1*A, +3*A}, {-1*A, +1*A},
-                {+3*A, -3*A}, {+3*A, -1*A}, {+3*A, +3*A}, {+3*A, +1*A},
-                {+1*A, -3*A}, {+1*A, -1*A}, {+1*A, +3*A}, {+1*A, +1*A},
-            }};
-
-            cf32 _find_nearest(const cf32 &a)
-            {
-                cf32 closest{0.0f, 0.0f};
-                float minimal_distance = std::numeric_limits<float>::max();
-                for (std::size_t i = 0; i < _points.size(); i++)
-                {
-                    cf32 point = _points[i];
-                    float distance = std::abs(a - point);
-                    if (distance < minimal_distance)
-                    {
-                        minimal_distance = distance;
-                        closest = point;
-                    }
-                }
-                return closest;
-            }
     };
 
     class ModemStateMachine
@@ -968,6 +939,8 @@ namespace Modem
                             _task.allow_update_agc_previous_gain = false;
 
                             _event.reset_frequency_estimator = false;
+                            _event.reset_loops = false;
+
 
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
@@ -981,8 +954,8 @@ namespace Modem
                             _task.freeze_gardner = true;
                             _task.allow_update_agc_previous_gain = false;
 
-                            _event.reset_frequency_estimator = true;
-                            _event.reset_loops = true;
+                            _event.reset_frequency_estimator = false;
+                            _event.reset_loops = false;
 
                             _count_of_time_samples_in_sampling_frequency = 0;
                         }
@@ -1309,6 +1282,7 @@ namespace Modem
             {
                 _pm_new.fill(1'000'000);
                 uint64_t d = 0;
+                // We don't know the state we came from so we need to check all states and find the best one
                 for (uint8_t i = 0; i < 64; i++)
                 {
 
