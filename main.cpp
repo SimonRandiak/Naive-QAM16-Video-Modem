@@ -427,6 +427,10 @@ namespace Modem
             {
                 _gain_storing = false;
             }
+            void set_rate(float rate)
+            {
+                _rate = rate;
+            }
         private:
             float _max_log_gain;
             float _min_log_gain;
@@ -655,7 +659,7 @@ namespace Modem
         PLLCoefficients _coeffs;
         float _sps;
         double _t, _t_prev;
-        float _v = 0.0f, _integral = 0.0f, _vmax = 0.15f;
+        float _v = 0.0f, _integral = 0.0f, _vmax = 0.05f;
         cf32  _prev_symbol{0.0f, 0.0f};
         std::vector<cf32> _working_buffer;
         bool _freeze = false;
@@ -841,6 +845,7 @@ namespace Modem
                 bool freeze_gardner =                           false;
                 bool freeze_dd_agc =                            false;
                 bool narrow_loop =                              false;
+                bool fast_agc_loop =                            false;
                 bool allow_update_agc_previous_gain =           false;
             };
 
@@ -904,6 +909,7 @@ namespace Modem
                             _task.narrow_loop = true;
                             _task.freeze_agc = false;
                             _task.allow_update_agc_previous_gain = true;
+                            _task.fast_agc_loop = false;
 
                             _event.reset_frequency_estimator = false;
 
@@ -937,6 +943,7 @@ namespace Modem
                             _task.freeze_dd_agc = true;
                             _task.narrow_loop = true;
                             _task.allow_update_agc_previous_gain = false;
+                            _task.fast_agc_loop = false;
 
                             _event.reset_frequency_estimator = false;
                             _event.reset_loops = false;
@@ -953,6 +960,7 @@ namespace Modem
                             _task.freeze_agc = true;
                             _task.freeze_gardner = true;
                             _task.allow_update_agc_previous_gain = false;
+                            _task.fast_agc_loop = false;
 
                             _event.reset_frequency_estimator = false;
                             _event.reset_loops = false;
@@ -978,6 +986,7 @@ namespace Modem
                                 _task.freeze_dd_pll = false;
                                 _task.freeze_gardner = false;
                                 _task.allow_update_agc_previous_gain = true; 
+                                _task.fast_agc_loop = false;
 
                                 _event.reset_frequency_estimator = false;
 
@@ -992,7 +1001,8 @@ namespace Modem
                                 _task.freeze_dd_pll = false;
                                 _task.freeze_gardner = false;
                                 _task.freeze_agc = false;
-                                _task.allow_update_agc_previous_gain = false;  
+                                _task.allow_update_agc_previous_gain = false;
+                                _task.fast_agc_loop = true;
 
                                 _event.reset_frequency_estimator = true;
                                 _event.reset_loops = true;
@@ -1010,6 +1020,7 @@ namespace Modem
                             _task.freeze_gardner = false;
                             _task.freeze_agc = false;
                             _task.allow_update_agc_previous_gain = false; 
+                            _task.fast_agc_loop = true;
                             
                             _event.reset_frequency_estimator = true;
                             _event.reset_loops = true;
@@ -1053,8 +1064,8 @@ namespace Modem
 
             // UNLOCKED state
 
-            static constexpr double _T_lock = 15.5;
-            static constexpr double _T_unlock = 13.5;
+            static constexpr double _T_lock = 12.5;
+            static constexpr double _T_unlock = 12;
 
             // 2 seconds * Sampling rate
             static constexpr uint64_t _time_samples_in_sampling_frequency_to_switch_to_unlock = 2 * 2'400'000;
@@ -1682,6 +1693,8 @@ int main()
     static constexpr float sampling_frequency    = 2'400'000;
     static constexpr float pll_bn_ts_acquisition = 0.06f;
     static constexpr float pll_bn_ts_tracking    = 0.015f;
+    static constexpr float agc_tracking_rate     = 1.15e-5f; // 36ms
+    static constexpr float agc_acquisition_rate  = 6.94e-5f; // 6ms
     zmq::context_t ctx;
     zmq::socket_t sock(ctx, zmq::socket_type::sub);
 
@@ -1698,8 +1711,8 @@ int main()
     Modem::FIRFilter rrc_filter(Modem::rrc_taps.data(), Modem::rrc_taps.size());
     Modem::DDPLL pll_loop(0.06f, 1.0f); // kD needs callibration
     Modem::GardnerTED timing_loop(0.005, 8);
-    Modem::AGC agc(0.8f, 0.4, 1.15e-5f, 1e-4f, 1e4f);
-    Modem::DDAGC dd_agc(1, 0.016, 0.5, 2);
+    Modem::AGC agc(0.8f, 0.4, agc_tracking_rate, 1e-4f, 1e4f);
+    Modem::DDAGC dd_agc(1, 0.016, 0.1, 2.8);
     Modem::BitSlicer slicer;
     Modem::FrameSynchronizer frame_synchronizer;
     Modem::ConstellationAnalyzer const_analyzer;
@@ -1731,6 +1744,7 @@ int main()
         {
             pll_loop.reset();
             dd_agc.reset();
+            timing_loop.reset();
         }
 
         if (events.reset_mer)
@@ -1793,6 +1807,14 @@ int main()
         else
         {
             pll_loop.setBnTs(pll_bn_ts_acquisition);
+        }
+        if (tasks.fast_agc_loop)
+        {
+            agc.set_rate(agc_acquisition_rate);
+        }
+        else
+        {
+            agc.set_rate(agc_tracking_rate);
         }
     };
 
