@@ -104,3 +104,5 @@ Riešenie: obmedziť integrátor na očakávaný zvyškový ofset po hrubej kore
 Pri float a double konverzii moze vzniknut maly fazovy skok kvoli tomu akok su data ulozene
 
 Dalsi problem bol ze throttle a zmq si hromadili spravy by push takze fronta si nabrala velke data a tym padom nestihala a video sa zaseklo
+
+Gardner ted vmax bol moc velky a sposoboval zbytocne problemy
