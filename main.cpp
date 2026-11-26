@@ -1062,7 +1062,6 @@ namespace Modem
             task _task;
             event _event;
 
-            // UNLOCKED state
 
             static constexpr double _T_lock = 12.5;
             static constexpr double _T_unlock = 12;
@@ -1481,7 +1480,6 @@ namespace Modem
                     if (pos + HEADER_NIBBLES > _buffer.size())
                         break;
 
-                    // Hlavicka: kodovany blok (length + tail) -> 2 bajty
                     _read_coded(pos + SYNC_NIBBLES, HEADER_CODED_BYTES, k);
                     _viterbi.decode_bytes(_coded.data(), _coded.size(), _decoded);
                     const uint16_t length = static_cast<uint16_t>(
@@ -1493,7 +1491,6 @@ namespace Modem
                         continue;
                     }
 
-                    // Payload + CRC + tail: kodovany blok -> length + 2 bajty
                     const std::size_t payload_start = pos + HEADER_NIBBLES;
                     const std::size_t payload_coded_bytes = 2u * (length + 3u);
                     const std::size_t packet_end = payload_start + 2u * payload_coded_bytes;
@@ -1549,7 +1546,6 @@ namespace Modem
             int rotation() const { return _rotation; }
             std::size_t packets_ok() const { return _packets_ok; }
             std::size_t crc_errors() const { return _crc_errors; }
-            // Kolko kodovanych bitov Viterbi opravil v dobrych paketoch (od resetu)
             std::size_t corrected_bits() const { return _corrected_bits; }
 
         private:
@@ -1577,8 +1573,6 @@ namespace Modem
                 for (std::size_t i = 0; i < SYNC_NIBBLES; ++i)
                     word = (word << 4) | (_buffer[pos + i] & 0x0F);
 
-                // Sync nie je kodovany, preto tolerujeme par chybnych bitov.
-                // Rotovane sync slova sa navzajom lisia v 16 bitoch, 4 chyby su bezpecne.
                 for (int k = 0; k < 4; ++k)
                     if (std::popcount(word ^ SYNC_ROT[k]) <= SYNC_MAX_BIT_ERRORS)
                         return k;
@@ -1592,7 +1586,6 @@ namespace Modem
                                             inv[_buffer[pos + 1] & 0x0F]);
             }
 
-            // Precita n kodovanych bajtov (2 nibble na bajt) od pozicie pos do _coded
             void _read_coded(std::size_t pos, std::size_t n, int k)
             {
                 _coded.resize(n);
@@ -1734,7 +1727,7 @@ int main()
         Modem::ModemStateMachine::event events = state_machine.get_event();
         Modem::ModemStateMachine::task tasks = state_machine.get_task();
 
-        // Events: one-shot, executed once and then cleared
+        // events one-shot, executed once and then cleared
         if (events.reset_frequency_estimator)
         {
             coarse_estimator.reset();
@@ -1754,7 +1747,7 @@ int main()
 
         state_machine.clear_events();
 
-        // Levels: valid for the whole state, safe to apply on every block
+        // Levels valid for the whole state, safe to apply on every block
         if (tasks.freeze_agc)
         {
             agc.freeze();
