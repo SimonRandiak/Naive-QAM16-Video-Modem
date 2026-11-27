@@ -7,7 +7,7 @@
 # GNU Radio Python Flow Graph
 # Title: QAM16 video link Transmitter
 # Author: Simon Randiak
-# GNU Radio version: 3.10.12.0
+# GNU Radio version: 3.10.9.2
 
 from PyQt5 import Qt
 from gnuradio import qtgui
@@ -15,19 +15,17 @@ from gnuradio import blocks
 from gnuradio import channels
 from gnuradio.filter import firdes
 from gnuradio import digital
-from gnuradio import network
-from gnuradio import zeromq
-import threading
-import tx_epy_block_0 as epy_block_0  # embedded python block
 from gnuradio import gr
-from gnuradio.filter import firdes
 from gnuradio.fft import window
 import sys
 import signal
+from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
-
+from gnuradio import network
+from gnuradio import zeromq
+import tx_epy_block_0 as epy_block_0  # embedded python block
 
 
 
@@ -54,7 +52,7 @@ class tx(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
 
         try:
             geometry = self.settings.value("geometry")
@@ -62,7 +60,6 @@ class tx(gr.top_block, Qt.QWidget):
                 self.restoreGeometry(geometry)
         except BaseException as exc:
             print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
-        self.flowgraph_started = threading.Event()
 
         ##################################################
         # Variables
@@ -112,7 +109,7 @@ class tx(gr.top_block, Qt.QWidget):
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "tx")
+        self.settings = Qt.QSettings("GNU Radio", "tx")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -172,7 +169,6 @@ def main(top_block_cls=tx, options=None):
     tb = top_block_cls()
 
     tb.start()
-    tb.flowgraph_started.set()
 
     tb.show()
 
